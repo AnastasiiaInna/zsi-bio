@@ -6,6 +6,9 @@ import org.apache.spark.sql._
 import scala.util.Random
 
 trait LDPruningMethods{
+  def pairComposite (snp1: Vector[Int], snp2: Vector[Int]): Double
+  def pairR (snp1: Vector[Int], snp2: Vector[Int]): Double
+  def pairDPrime (snp1: Vector[Int], snp2: Vector[Int]): Double
   def performLDPruning(dataSet: DataFrame, method: String, ldThreshold: Double, slideMaxBp: Int, slideMaxN: Int): DataFrame
   def performLDPruning(sortedVariantsBySampelId: RDD[(String, Array[SampleVariant])], method: String, ldThreshold: Double, slideMaxBp: Int, slideMaxN: Int): List[String]
 }
@@ -52,6 +55,24 @@ class LDPruning[T] (sc: SparkContext, sqlContext: SQLContext) extends Serializab
   private val validSNPx2: Vector[Int] = packedCond((x: Int, y: Int) => (x < 3 && y < 3), (x: Int, Int) => x * x)
   private val validSNPy: Vector[Int] = packedCond((x: Int, y: Int) => (x < 3 && y < 3), (x: Int, y:Int) => x * y)
 
+  private val IncArray: Array[Array[Int]] = Array(
+    Array(0, 0, 0, 2, 0), // BB, BB
+    Array(0, 0, 1, 1, 0), // BB, AB
+    Array(0, 0, 2, 0, 0), // BB, AA
+    Array(0, 1, 0, 1, 0), // AB, BB
+    Array(0, 0, 0, 0, 2), // AB, AB
+    Array(1, 0, 1, 0, 0), // AB, AA
+    Array(0, 2, 0, 0, 0), // AA, BB
+    Array(1, 1, 0, 0, 0), // AA, AB
+    Array(2, 0, 0, 0, 0)  // AA, AA
+  )
+
+  private val numAA: Vector[Int] = packedCond((x: Int, y: Int) => (x < 3 && y < 3), (x: Int, y: Int) => IncArray(x * 3 + y)(0))
+  private val numAB: Vector[Int] = packedCond((x: Int, y: Int) => (x < 3 && y < 3), (x: Int, y: Int) => IncArray(x * 3 + y)(1))
+  private val numBA: Vector[Int] = packedCond((x: Int, y: Int) => (x < 3 && y < 3), (x: Int, y: Int) => IncArray(x * 3 + y)(2))
+  private val numBB: Vector[Int] = packedCond((x: Int, y: Int) => (x < 3 && y < 3), (x: Int, y: Int) => IncArray(x * 3 + y)(3))
+  private val numDH2: Vector[Int] = packedCond((x: Int, y: Int) => (x < 3 && y < 3), (x: Int, y: Int) => IncArray(x * 3 + y)(4))
+
 
   def pairComposite (snp1: Vector[Int], snp2: Vector[Int]): Double ={
     val frequencies = (snp1, snp2).zipped.map{
@@ -89,9 +110,17 @@ class LDPruning[T] (sc: SparkContext, sqlContext: SQLContext) extends Serializab
     return Double.NaN
   }
 
+  private def pLog (value: Double): Double ={
+    return math.log(value)
+  }
+
+  def pairR (snp1: Vector[Int], snp2: Vector[Int]): Double ={
+    return Double.NaN
+  }
+
   private def calcLD(method: String, snp1: Vector[Int], snp2: Vector[Int]) : Double = {
     method match {
-      case "composite" => pairComposite(snp1, snp2)
+      case "composite" => return pairComposite(snp1, snp2)
     }
     return Double.NaN
   }
