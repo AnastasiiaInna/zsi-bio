@@ -1,9 +1,12 @@
 package com.zsibio
 
-import org.apache.spark.{SparkConf, SparkContext}
+import org.apache.spark.{SparkContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql._
+
+import math._
 import scala.util.Random
+import scala.util.control.Breaks._
 
 trait LDPruningMethods{
   def pairComposite (snp1: Vector[Int], snp2: Vector[Int]): Double
@@ -104,17 +107,68 @@ class LDPruning[T] (sc: SparkContext, sqlContext: SQLContext) extends Serializab
       val DB: Double = pBB - pB * pB
       val t: Double = (pA * pa + DA) * (pB * pb + DB)
       if (t > 0)
-        return delta / math.sqrt(t)
+        return delta / sqrt(t)
     }
 
     return Double.NaN
   }
 
-  private def pLog (value: Double): Double ={
-    return math.log(value)
+  private def epsilon (): Double ={
+    lazy val s: Stream[Double] = 1.0 #:: s.map(f => f / 2.0)
+    s.takeWhile(e => e + 1.0 != 1.0).last
+  }
+
+  private def pLog (value: Double): Double = return math.log(value + epsilon)
+
+  private def proportionHaplo (nAA: Long, nAB: Long, nBA: Long, nBB: Long, nDH2: Long) : Map[String, Double] ={
+
+    val EMFactor : Double = 0.01
+    val nMaxIter : Long = 1000
+    val funcRelTol : Double = sqrt(epsilon)
+
+    val nTotal : Double = nAA + nAB + nBA + nBB + nDH2
+
+    var proportions : Map[String, Double] = Map("pAA" -> 0., "pAB" -> 0., "pBA" -> 0., "pBB" -> 0.)
+
+    /* var (pAA, pAB, pBA, pBB) : (Double, Double, Double, Double) = (0., 0., 0., 0.) */
+    /* def getFreq (p: Double, factor: Double, N: Double) : Double = return { (p + factor) / N } */
+
+    if ((nTotal > 0) && (nDH2 > 0)){
+      val div : Double = nAA + nAB + nBA + nBB + 4.0 * EMFactor
+      proportions = (proportions.keySet, Array(nAA, nAB, nBA, nBB)).zipped.map((p, n) => (p, (n + EMFactor) / div)).toMap
+
+      val nDH : Long = nDH2 / 2
+      var logLH : Double =  (proportions.keySet, Array(nAA, nAB, nBA, nBB, nDH)).zipped.map((p, n) => n * pLog(proportions.get(p).get)).sum
+      var conTol : Double = abs(funcRelTol * logLH)
+      if (conTol < epsilon) conTol = epsilon
+
+      var i : Int = 0
+      for (i <- 1 until nMaxIter){
+        val pAABB: Double = proportions.get("pAA").get * proportions.get("pBB").get
+        val pABBA: Double = proportions.get("pAB").get * proportions.get("pBA").get
+
+        val nDHAABB: Double = pAABB / (pAABB + pABBA) * nDH
+        val nDHABBA: Double = pABBA / (pAABB + pABBA) * nDH
+
+        proportions = (proportions.keySet, Array(nAA, nAB, nBA, nBB), Array(nDHAABB, nDHABBA, nDHABBA, nDHAABB)).zipped.map((p, n, nDH) => (p, (n + nDH) / nTotal)).toMap
+        val newLogLH : Double =  (proportions.keySet, Array(nAA, nAB, nBA, nBB, nDH)).zipped.map((p, n) => n * pLog(proportions.get(p).get)).sum
+
+        if (abs(logLH - newLogLH) <= conTol)
+          break()
+        logLH = newLogLH
+      }
+    } else{
+      proportions = (proportions.keySet, Array(nAA, nAB, nBA, nBB)).zipped.map((p, n) => (p, n / nTotal)).toMap
+    }
+
+    return proportions
   }
 
   def pairR (snp1: Vector[Int], snp2: Vector[Int]): Double ={
+    return Double.NaN
+  }
+
+  def pairDPrime (snp1: Vector[Int], snp2: Vector[Int]): Double ={
     return Double.NaN
   }
 
