@@ -12,6 +12,7 @@ trait LDPruningMethods{
   def pairComposite (snp1: Vector[Int], snp2: Vector[Int]): Double
   def pairR (snp1: Vector[Int], snp2: Vector[Int]): Double
   def pairDPrime (snp1: Vector[Int], snp2: Vector[Int]): Double
+  def pairCorr (snp1: Vector[Int], snp2: Vector[Int]): Double
   def performLDPruning(dataSet: DataFrame, method: String, ldThreshold: Double, slideMaxBp: Int, slideMaxN: Int): DataFrame
   def performLDPruning(sortedVariantsBySampelId: RDD[(String, Array[SampleVariant])], method: String, ldThreshold: Double, slideMaxBp: Int, slideMaxN: Int): List[String]
 }
@@ -56,7 +57,7 @@ class LDPruning[T] (sc: SparkContext, sqlContext: SQLContext) extends Serializab
 
   private val validSNPx: Vector[Int] = packedCond((x: Int, y: Int) => (x < 3 && y < 3), (x: Int, Int) => x)
   private val validSNPx2: Vector[Int] = packedCond((x: Int, y: Int) => (x < 3 && y < 3), (x: Int, Int) => x * x)
-  private val validSNPy: Vector[Int] = packedCond((x: Int, y: Int) => (x < 3 && y < 3), (x: Int, y:Int) => x * y)
+  private val validSNPxy: Vector[Int] = packedCond((x: Int, y: Int) => (x < 3 && y < 3), (x: Int, y:Int) => x * y)
 
   private val IncArray: Array[Array[Int]] = Array(
     Array(0, 0, 0, 2, 0), // BB, BB
@@ -113,6 +114,32 @@ class LDPruning[T] (sc: SparkContext, sqlContext: SQLContext) extends Serializab
     return Double.NaN
   }
 
+  def pairCorr (snp1: Vector[Int], snp2: Vector[Int]): Double ={
+    val frequencies = (snp1, snp2).zipped.map{
+      (s1, s2) =>{
+        val g1 = if (0 <= s1 && s1 <= 2) s1 | ~0x03 else 0xFF
+        val g2 = if (0 <= s2 && s2 <= 2) s2 | ~0x03 else 0xFF
+        val p = (((g1 & 0xFF) << 8) | (g2 & 0xFF))
+        val q = (((g2 & 0xFF) << 8) | (g1 & 0xFF))
+        (validNumSNP(p), validSNPx(p), validSNPx(q), validSNPx2(p), validSNPx2(q), validSNPxy(p))
+      }
+    }.map(tup => List(tup._1, tup._2, tup._3, tup._4, tup._5, tup._6))
+      .transpose.map(vec => vec.sum)
+
+    val n  = frequencies(0); val X  = frequencies(1); val Y  = frequencies(2);
+    val XX = frequencies(3); val YY = frequencies(4); val XY = frequencies(5);
+
+    if (n > 0){
+      val c1 : Double = XX - X * X / n.toDouble
+      val c2 : Double = YY - Y * Y / n.toDouble
+      val t  : Double = c1 * c2
+      if (t > 0)
+        return (XY - X * Y / n.toDouble) / sqrt(t)
+    }
+
+    return Double.NaN
+  }
+
   private def epsilon (): Double ={
     lazy val s: Stream[Double] = 1.0 #:: s.map(f => f / 2.0)
     s.takeWhile(e => e + 1.0 != 1.0).last
@@ -123,7 +150,7 @@ class LDPruning[T] (sc: SparkContext, sqlContext: SQLContext) extends Serializab
   private def proportionHaplo (nAA: Long, nAB: Long, nBA: Long, nBB: Long, nDH2: Long) : Map[String, Double] ={
 
     val EMFactor : Double = 0.01
-    val nMaxIter : Long = 1000
+    val nMaxIter : Int = 1000
     val funcRelTol : Double = sqrt(epsilon)
 
     val nTotal : Double = nAA + nAB + nBA + nBB + nDH2
@@ -142,8 +169,7 @@ class LDPruning[T] (sc: SparkContext, sqlContext: SQLContext) extends Serializab
       var conTol : Double = abs(funcRelTol * logLH)
       if (conTol < epsilon) conTol = epsilon
 
-      var i : Int = 0
-      for (i <- 1 until nMaxIter){
+      breakable {for (i <- 1 until nMaxIter){
         val pAABB: Double = proportions.get("pAA").get * proportions.get("pBB").get
         val pABBA: Double = proportions.get("pAB").get * proportions.get("pBA").get
 
@@ -154,9 +180,9 @@ class LDPruning[T] (sc: SparkContext, sqlContext: SQLContext) extends Serializab
         val newLogLH : Double =  (proportions.keySet, Array(nAA, nAB, nBA, nBB, nDH)).zipped.map((p, n) => n * pLog(proportions.get(p).get)).sum
 
         if (abs(logLH - newLogLH) <= conTol)
-          break()
+          break
         logLH = newLogLH
-      }
+      }}
     } else{
       proportions = (proportions.keySet, Array(nAA, nAB, nBA, nBB)).zipped.map((p, n) => (p, n / nTotal)).toMap
     }
@@ -165,16 +191,55 @@ class LDPruning[T] (sc: SparkContext, sqlContext: SQLContext) extends Serializab
   }
 
   def pairR (snp1: Vector[Int], snp2: Vector[Int]): Double ={
-    return Double.NaN
+    val frequencies = (snp1, snp2).zipped.map{
+      (s1, s2) =>{
+        val g1 = if (0 <= s1 && s1 <= 2) s1 | ~0x03 else 0xFF
+        val g2 = if (0 <= s2 && s2 <= 2) s2 | ~0x03 else 0xFF
+        val p = (((g1 & 0xFF) << 8) | (g2 & 0xFF))
+        (numAA(p), numAB(p), numBA(p), numBB(p), numDH2(p))
+      }
+    }.map(tup => List(tup._1, tup._2, tup._3, tup._4, tup._5)).transpose.map(vec => vec.sum)
+
+    val proportions : Map[String, Double] = this.proportionHaplo(frequencies(0),
+      frequencies(1), frequencies(2), frequencies(3), frequencies(4))
+
+    val pA  : Double = proportions.get("pAA").get + proportions.get("pAB").get
+    val p_A : Double = proportions.get("pAA").get + proportions.get("pBA").get
+    val pB  : Double = proportions.get("pBB").get + proportions.get("pBA").get
+    val p_B : Double = proportions.get("pBB").get + proportions.get("pAB").get
+    val D   : Double = proportions.get("pAA").get - pA  * p_A
+
+    return (D / sqrt(pA * p_A * pB * p_B))
   }
 
   def pairDPrime (snp1: Vector[Int], snp2: Vector[Int]): Double ={
-    return Double.NaN
+    val frequencies = (snp1, snp2).zipped.map{
+      (s1, s2) =>{
+        val g1 = if (0 <= s1 && s1 <= 2) s1 | ~0x03 else 0xFF
+        val g2 = if (0 <= s2 && s2 <= 2) s2 | ~0x03 else 0xFF
+        val p = (((g1 & 0xFF) << 8) | (g2 & 0xFF))
+        (numAA(p), numAB(p), numBA(p), numBB(p), numDH2(p))
+      }
+    }.map(tup => List(tup._1, tup._2, tup._3, tup._4, tup._5)).transpose.map(vec => vec.sum)
+
+    val proportions : Map[String, Double] = this.proportionHaplo(frequencies(0),
+      frequencies(1), frequencies(2), frequencies(3), frequencies(4))
+
+    val pA  : Double = proportions.get("pAA").get + proportions.get("pAB").get
+    val p_A : Double = proportions.get("pAA").get + proportions.get("pBA").get
+    val pB  : Double = proportions.get("pBB").get + proportions.get("pBA").get
+    val p_B : Double = proportions.get("pBB").get + proportions.get("pAB").get
+    val D   : Double = proportions.get("pAA").get - pA  * p_A
+    val donominator : Double = if (D >= 0) min(pA * p_B, pB * p_A) else max(-pA * p_A, -pB * p_B)
+
+    return (D / donominator)
   }
 
   private def calcLD(method: String, snp1: Vector[Int], snp2: Vector[Int]) : Double = {
     method match {
       case "composite" => return pairComposite(snp1, snp2)
+      case "r"         => return pairR(snp1, snp2)
+      case "dprime"    => return pairDPrime(snp1, snp2)
     }
     return Double.NaN
   }
@@ -313,8 +378,8 @@ class LDPruning[T] (sc: SparkContext, sqlContext: SQLContext) extends Serializab
       listGeno.foreach{
         vec =>{
           totalCnt += 1
-          if ((math.abs(i - vec.snpIdx) <= slideMaxN) && (math.abs(posI - vec.snpPos) <= slideMaxBp)) {
-            if (math.abs(pairComposite(snpSet(i), vec.snp)) <= ldThreshold)
+          if ((abs(i - vec.snpIdx) <= slideMaxN) && (abs(posI - vec.snpPos) <= slideMaxBp)) {
+            if (abs(calcLD(method, snpSet(i), vec.snp)) <= ldThreshold)
               validCnt += 1
           }
           else{
@@ -334,7 +399,7 @@ class LDPruning[T] (sc: SparkContext, sqlContext: SQLContext) extends Serializab
     listGeno = Nil
     outputSNPIdSet.foreach{
       snp => {
-        if ((math.abs(snp.snpIdx - startIdx) <= slideMaxN) && (math.abs(snp.snpPos - posStartIdx)) <= slideMaxBp)
+        if ((abs(snp.snpIdx - startIdx) <= slideMaxN) && (abs(snp.snpPos - posStartIdx)) <= slideMaxBp)
           listGeno ::= snp
       }
     }
@@ -347,8 +412,8 @@ class LDPruning[T] (sc: SparkContext, sqlContext: SQLContext) extends Serializab
       listGeno.foreach{
         vec =>{
           totalCnt += 1
-          if ((math.abs(i - vec.snpIdx) <= slideMaxN) && (math.abs(posI - vec.snpPos) <= slideMaxBp)) {
-            if (math.abs(pairComposite(snpSet(i), vec.snp)) <= ldThreshold)
+          if ((abs(i - vec.snpIdx) <= slideMaxN) && (abs(posI - vec.snpPos) <= slideMaxBp)) {
+            if (abs(calcLD(method, snpSet(i), vec.snp)) <= ldThreshold)
               validCnt += 1
           }
           else{
