@@ -240,6 +240,7 @@ class LDPruning[T] (sc: SparkContext, sqlContext: SQLContext) extends Serializab
       case "composite" => return pairComposite(snp1, snp2)
       case "r"         => return pairR(snp1, snp2)
       case "dprime"    => return pairDPrime(snp1, snp2)
+      case "corr"      => return pairCorr(snp1, snp2)
     }
     return Double.NaN
   }
