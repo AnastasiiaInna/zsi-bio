@@ -16,12 +16,10 @@ import org.apache.spark.ml.feature.VectorAssembler
 import org.apache.spark.ml.feature.StandardScaler
 import org.apache.spark.mllib.linalg.{Vectors}
 import org.apache.spark.mllib.stat.{MultivariateStatisticalSummary, Statistics}
-import org.apache.spark.sql.functions.udf
 
 import scala.util.Random
 // import org.apache.spark.mllib.linalg.{LinalgShim, SparseVector, Vector, Vectors}
 import org.apache.spark.mllib.linalg.distributed.{CoordinateMatrix, MatrixEntry, RowMatrix}
-import smile.math.distance.EuclideanDistance
 import breeze.linalg.{DenseVector, norm}
 
 import scala.io.Source
@@ -39,8 +37,8 @@ case class Parameters(
                      panelFile : String,
                      missingRate : Double,
                      isFrequencies : Boolean,
-                     infFreq : Double,
-                     supFreq : Double,
+                     var infFreq : Double,
+                     var supFreq : Double,
                      isLDPruning : Boolean,
                      ldMethod : String,
                      ldTreshold : Double,
@@ -58,7 +56,6 @@ case class Parameters(
 }
 
 object Clustering{
-
   def main(args: Array[String]): Unit = {
 
     val conf = new SparkConf().setAppName("PopStrat").setMaster("local").set("spark.ext.h2o.repl.enabled", "false")
@@ -69,7 +66,7 @@ object Clustering{
     var parametersFile : String = null
     var parameters : Parameters = null
 
-    if (args.length == 0){
+    if (args.length == 0) {
       parameters = new Parameters()
     }
     else if (args.length == 1) {
@@ -113,6 +110,23 @@ object Clustering{
         paramsMap.get("pca").getOrElse(null).toBoolean, paramsMap.get("pca_method").getOrElse(null),
         paramsMap.get("mds").getOrElse(null).toBoolean, paramsMap.get("mds_method").getOrElse(null)
       )
+
+      if (parameters.isLDPruning == true) {
+        parameters.infFreq = 0.
+        parameters.supFreq = 0.
+      }
+    }
+
+    implicit class RDDOps[T](rdd: RDD[Seq[T]]) {
+      def transpose(): RDD[Seq[T]] = {
+        rdd.zipWithIndex.flatMap {
+          case (row, rowIndex) => row.zipWithIndex.map {
+            case (number, columnIndex) => columnIndex -> (rowIndex, number)
+          }
+        }.groupByKey.sortByKey().values.map {
+          indexedRow => indexedRow.toSeq.sortBy(_._1).map(_._2)
+        }
+      }
     }
 
 /*        val gtsForSample: RDD[Genotype] = sc.loadGenotypes(genotypeFile)
@@ -121,7 +135,7 @@ object Clustering{
         val sampledGts = gtsForSample.filter(g => (g.getVariant.getStart >= start && g.getVariant.getEnd <= end) )
         sampledGts.adamParquetSave("/home/anastasiia/1000genomes/chr22-sample_3000.adam")*/
 
-    val populations = Array("AFR")//, "EUR")//, "AMR", "EAS", "SAS")
+    val populations = Array("AFR", "EUR", "AMR", "EAS", "SAS")
 
     def extract(file: String, superPop: String = "pop", filter: (String, String) => Boolean): Map[String, String] = {
       Source.fromFile(file).getLines().map(line => {
@@ -142,65 +156,60 @@ object Clustering{
       bpanel.value.contains(genotype.getSampleId)
     })
 
-    val gts = new Population(sc, sqlContext, genotypes, panel, 0.2, 0.005, 1.0)
-    // val pcaMethods = Set(Method.GLRM, Method.GramSVD)//, Method.Power, Method.Randomized)
+    val gts = new Population(sc, sqlContext, genotypes, panel, parameters.missingRate, parameters.infFreq, parameters.supFreq)
+    val variantsRDD: RDD[(String, Array[SampleVariant])] = gts.sortedVariantsBySampelId
+    println(s"Number of SNPs is ", variantsRDD.first()._2.length)
 
     /* LDPruning */
 
-    val ldSize = 256
-    val seq = sc.parallelize(0 until ldSize * ldSize)
-    val ldPrun = new LDPruning(sc, sqlContext, seq)
+    var prunnedSnpIdSet: List[String] = null
 
-    def metoda(): Unit = {
-      val ldsize3 = ldSize
-    }
-    println("Git 000")
-    val variantsRDD : RDD[(String, Array[SampleVariant])] = gts.sortedVariantsBySampelId
+    if (parameters.isLDPruning == true) {
+      val ldSize = 256
+      val seq = sc.parallelize(0 until ldSize * ldSize)
+      val ldPrun = new LDPruning(sc, sqlContext, seq)
 
-    println (s"Number of SNPs is ",  variantsRDD.first()._2.length)
+      def toTSNP(snpId: String, snpPos: Long, snp: Vector[Int]): TSNP = {
+        new TSNP(snpPos, snpId, snpId.split(":")(1).toInt, snp)
+      }
 
-    def toTSNP(snpId : String, snpPos : Long, snp : Vector[Int]): TSNP = {
-      new TSNP(snpPos, snpId, snpId.split(":")(1).toInt, snp)
-    }
+      val snpIdSet: RDD[(String, Long)] = sc.parallelize(variantsRDD.first()._2.map(_.variantId)).zipWithIndex()
 
-    val snpIdSet: RDD[(String, Long)] = sc.parallelize(variantsRDD.first()._2.map(_.variantId)).zipWithIndex()
-
-    def transposeRDD[T] (rdd: RDD[Seq[T]]): RDD[Seq[T]] ={
-      rdd.zipWithIndex.flatMap{
-        case (row, rowIndex) => row.zipWithIndex.map {
-          case (number, columnIndex) => columnIndex -> (rowIndex, number)
+      def transposeRDD[T](rdd: RDD[Seq[T]]): RDD[Seq[T]] = {
+        rdd.zipWithIndex.flatMap {
+          case (row, rowIndex) => row.zipWithIndex.map {
+            case (number, columnIndex) => columnIndex -> (rowIndex, number)
+          }
+        }.groupByKey.sortByKey().values.map {
+          indexedRow => indexedRow.toSeq.sortBy(_._1).map(_._2)
         }
-      }.groupByKey.sortByKey().values.map {
-        indexedRow => indexedRow.toSeq.sortBy(_._1).map(_._2)
       }
-    }
 
-    var snpSet: RDD[Seq[Int]] = variantsRDD.map { case (_, sortedVariants) => sortedVariants.map(_.alternateCount.toInt)}
-    snpSet = transposeRDD(snpSet)
+      var snpSet: RDD[Seq[Int]] = variantsRDD.map { case (_, sortedVariants) => sortedVariants.map(_.alternateCount.toInt) }
+      snpSet = transposeRDD(snpSet)
 
-    def getListGeno(iditer: Iterator[(String, Long)], snpiter: Iterator[Seq[Int]]) : Iterator[TSNP] = {
-      var res = List[TSNP]()
-      while (iditer.hasNext && snpiter.hasNext){
-        val iditerCur = iditer.next
-        val tsnp = toTSNP(iditerCur._1, iditerCur._2, snpiter.next.toVector)
-        res ::= tsnp
+      def getListGeno(iditer: Iterator[(String, Long)], snpiter: Iterator[Seq[Int]]): Iterator[TSNP] = {
+        var res = List[TSNP]()
+        while (iditer.hasNext && snpiter.hasNext) {
+          val iditerCur = iditer.next
+          val tsnp = toTSNP(iditerCur._1, iditerCur._2, snpiter.next.toVector)
+          res ::= tsnp
+        }
+        res.iterator
       }
-      res.iterator
+
+      val listGeno = snpIdSet.repartition(1).zipPartitions(snpSet.repartition(1))(getListGeno)
+      // val listGeno = snpIdSet.zip(snpSet).map{case((snpId, snpPos), snp) => toTSNP(snpId, snpPos, snp.toVector)}
+      // println(listGeno.collect().toList)
+
+      prunnedSnpIdSet = ldPrun.performLDPruning(listGeno, parameters.ldMethod, parameters.ldTreshold, parameters.ldMaxBp, parameters.ldMaxN)
+      println(prunnedSnpIdSet)
     }
-
-    val listGeno = snpIdSet.repartition(1).zipPartitions(snpSet.repartition(1))(getListGeno)
-    // val listGeno = snpIdSet.zip(snpSet).map{case((snpId, snpPos), snp) => toTSNP(snpId, snpPos, snp.toVector)}
-    // println(listGeno.collect().toList)
-    println("Git 2")
-
-    var prunnedSnpIdSet: List[String] = ldPrun.performLDPruning(listGeno, "composite", 0.2)
-    println(prunnedSnpIdSet)
 
     /*LDPruning end*/
+
     var ds = gts.getDataSet(variantsRDD, prunnedSnpIdSet)
     println(ds.count(), ds.columns.length)
-
-    println("Git 3")
 
     /* outliers */
 
@@ -244,11 +253,6 @@ object Clustering{
     meanVar.foreach(x => println(x.toList))
 
     // println(subRDDs.length, subRDDs(0).count)
-
-   /*  val samplesIDSet : RDD[String] = variantsRDD.map{case(id, _) => id}
-       val outliersDetection = new OutliersDetection(sc, sqlContext)
-       outliersDetection.findOutliers(samplesForOutliers, samplesIDSet) */
-
     /* outliers end*/
 
 
@@ -469,13 +473,13 @@ object Clustering{
 
 
 
-    val snp1 = Vector(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0)
+/*    val snp1 = Vector(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0)
     val snp2 = Vector(0, 2, 0, 2, 2, 1, 1, 1, 0, 0, 2, 0, 2, 2, 1, 1, 1, 3)
     println("cor :")
     println("composite: ",  ldPrun.pairComposite(snp1, snp2))
     println("corr: ",  ldPrun.pairCorr(snp1, snp2))
     println("r: ",  ldPrun.pairR(snp1, snp2))
-    println("dprime: ",  ldPrun.pairDPrime(snp1, snp2))
+    println("dprime: ",  ldPrun.pairDPrime(snp1, snp2))*/
 
 
 
