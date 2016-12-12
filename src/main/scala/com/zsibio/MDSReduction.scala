@@ -7,6 +7,7 @@ import smile.mds.MDS
 import smile.mds.IsotonicMDS
 import smile.mds.SammonMapping
 import org.apache.spark.mllib.linalg.{Vector, Vectors}
+import org.apache.spark.mllib.linalg.distributed.{MatrixEntry, RowMatrix}
 import breeze.linalg.{DenseVector, norm, sum}
 
 trait MDSMethods{
@@ -15,15 +16,17 @@ trait MDSMethods{
   def computeManhattan(v1: Vector, v2: Vector): Double
   def computeHamming(v1: Vector, v2: Vector): Double
   protected def calcDistance(method: String, v1: Vector, v2: Vector, p: Int) : Double
-  def computeMDSds(ds: DataFrame, mdsMethod: String, distance: String, p: Int): Array[Array[Double]]
+  // def computeMDS(ds: DataFrame, mdsMethod: String, distance: String, p: Int): Array[Array[Double]]
   def computeMDS(ds: RDD[Seq[Int]], mdsMethod: String, distance: String, p: Int): Array[Array[Double]]
 }
 
 @SerialVersionUID(15L)
-class mds[T] (sc: SparkContext, sqlContext: SQLContext) extends Serializable {
+class MDSReduction[T] (sc: SparkContext, sqlContext: SQLContext) extends Serializable with MDSMethods {
 
   private val _variance : Double =  .7
-  private val _npc: Int = 50
+  private val _npc: Int = 20
+  private var _distance : String = ""
+  private var _p : Int = 2
 
   def computeMinkowski(v1: Vector, v2: Vector, p: Int) : Double = {
     val b1 = new DenseVector(v1.toArray)
@@ -43,7 +46,7 @@ class mds[T] (sc: SparkContext, sqlContext: SQLContext) extends Serializable {
     (v1.toArray, v2.toArray).zipped.par.map{case(el1, el2) => el1 != el2 }.filter(_ == true).size
   }
 
-  private def calcDistance(method: String, v1: Vector, v2: Vector, p: Int = 2) : Double = {
+  protected def calcDistance(method: String, v1: Vector, v2: Vector, p: Int = 2) : Double = {
     method match {
       case "minkowski" => return computeMinkowski(v1, v2, p)
       case "euclidean" => return computeEuclidean(v1, v2)
@@ -72,7 +75,7 @@ class mds[T] (sc: SparkContext, sqlContext: SQLContext) extends Serializable {
     val snps = ds.drop("SampleId").drop("Region")
     val snpsRDD: RDD[Vector] = snps.rdd.map(row => Vectors.dense(row.toSeq.toArray.map(x => x.asInstanceOf[Double])))
     val matrix: Array[Double] = snpsRDD.cartesian(snpsRDD).map{case(vec1, vec2) => calcDistance(distance, vec1, vec2, p)}.collect()
-    val proximityMatr: Array[Array[Double]] = matrix.grouped(math.sqrt(matrix.length).toInt).toArray.map(_.toArray)
+    val proximityMatr: Array[Array[Double]] = matrix.grouped(math.sqrt(matrix.length).toInt).toArray
 
     val pc = mdsMethod match {
       case "classic"  => computeClassic(proximityMatr, _npc)
@@ -83,9 +86,15 @@ class mds[T] (sc: SparkContext, sqlContext: SQLContext) extends Serializable {
   }
 
   def computeMDS(ds: RDD[Seq[Int]], mdsMethod: String, distance: String = "euclidean", p: Int = 2): Array[Array[Double]] ={
-    val snpsRDD: RDD[Vector] = ds.map(row => Vectors.dense(row.toArray.map(x => x.asInstanceOf[Double])))
-    val matrix: Array[Double] = snpsRDD.cartesian(snpsRDD).map{case(vec1, vec2) => calcDistance(distance, vec1, vec2, p)}.collect()
-    val proximityMatr: Array[Array[Double]] = matrix.grouped(math.sqrt(matrix.length).toInt).toArray.map(_.toArray)
+    _distance = distance
+    _p = p
+    val snps: RDD[Vector] = ds.map(row => Vectors.dense(row.toArray.map(x => x.asInstanceOf[Double])))
+    val matrix: Array[Double] = snps.cartesian(snps).map{case(vec1, vec2) => calcDistance(distance, vec1, vec2, p)}.collect()
+/*    val rowMatrix = new RowMatrix(snps)
+    val matrix = rowMatrix.columnSimilarities().toBlockMatrix().toLocalMatrix().toArray*/
+    val proximityMatr: Array[Array[Double]] = matrix.grouped(math.sqrt(matrix.length).toInt).toArray
+    println(proximityMatr.length, proximityMatr(1).length)
+    proximityMatr.foreach(x => println(x.toList))
 
     val pc = mdsMethod match {
       case "classic"  => computeClassic(proximityMatr, _npc)
@@ -97,7 +106,6 @@ class mds[T] (sc: SparkContext, sqlContext: SQLContext) extends Serializable {
 
 }
 
-
-object mds extends Serializable{
-  def apply[T](sc: SparkContext, sqlContext: SQLContext): mds[T] = new mds[T](sc, sqlContext)
+object MDSReduction extends Serializable{
+  def apply[T](sc: SparkContext, sqlContext: SQLContext): MDSReduction[T] = new MDSReduction[T](sc, sqlContext)
 }
