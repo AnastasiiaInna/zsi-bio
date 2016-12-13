@@ -9,8 +9,8 @@ import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql._
 import org.bdgenomics.adam.rdd.ADAMContext._
-import org.bdgenomics.formats.avro.{Genotype, GenotypeAllele}
-import java.nio.file.{Files, Paths}
+import org.bdgenomics.formats.avro.{Genotype}
+import org.apache.spark.sql.{DataFrame, SQLContext}
 
 import org.apache.spark.ml.feature.VectorAssembler
 import org.apache.spark.ml.feature.StandardScaler
@@ -48,9 +48,8 @@ case class Parameters(
                      ldMaxN : Int,
                      isOutliers : Boolean,
                      isDimRed : Boolean,
-                     isPCA : Boolean,
+                     dimRedMethod : String,
                      pcaMethod : String,
-                     isMDS : Boolean,
                      mdsMethod : String,
                      isClustering : Boolean,
                      isClassification : Boolean,
@@ -59,7 +58,7 @@ case class Parameters(
                      ){
   def this() = this("file:///home/anastasiia/1000genomes/ALL.chrMT.phase3_callmom-v0_4.20130502.genotypes.vcf.adam",
     "file:///home/anastasiia/1000genomes/ALL.panel", "super_pop", Array("AFR", "EUR", "AMR", "EAS", "SAS"),
-    0., true, 0.005, 1., true, "compsite", 0.2, 500000, Int.MaxValue, false, true, true, "GramSVD", false, null,
+    0., true, 0.005, 1., true, "compsite", 0.2, 500000, Int.MaxValue, false, true, "PCA", "GramSVD", null,
     true, false, "kmeans", null)
 }
 
@@ -77,12 +76,23 @@ object PopulationStratification{
     }
   }
 
+  implicit class dfWriter(dataSet: DataFrame) {
+    def writecsv(filename: String): Unit = {
+      dataSet.write
+        .format("com.databricks.spark.csv")
+        .option("header", "true")
+        .save(filename)
+    }
+  }
+
   def main(args: Array[String]): Unit = {
 
     val conf = new SparkConf().setAppName("PopStrat").setMaster("local").set("spark.ext.h2o.repl.enabled", "false")
     val sc = new SparkContext(conf)
     val sqlContext = new SQLContext(sc)
     import sqlContext.implicits._
+
+    var ds : DataFrame= null
 
     var parametersFile : String = null
     var parameters : Parameters = null
@@ -129,11 +139,10 @@ object PopulationStratification{
         paramsMap.get("ld_pruning").getOrElse(null).toBoolean, paramsMap.get("ld_method").getOrElse(null),
         paramsMap.get("ld_treshold").getOrElse(null).toDouble, paramsMap.get("ld_max_bp").getOrElse(null).toInt,
         paramsMap.get("ld_max_n").getOrElse(null).toInt, paramsMap.get("outliers").getOrElse(null).toBoolean,
-        paramsMap.get("dim_reduction").getOrElse(null).toBoolean,
-        paramsMap.get("pca").getOrElse(null).toBoolean, paramsMap.get("pca_method").getOrElse(null),
-        paramsMap.get("mds").getOrElse(null).toBoolean, paramsMap.get("mds_method").getOrElse(null),
-        paramsMap.get("clustering").getOrElse(null).toBoolean, paramsMap.get("clustering_method").getOrElse(null),
-        paramsMap.get("classification").getOrElse(null).toBoolean, paramsMap.get("classificaion_method").getOrElse(null)
+        paramsMap.get("dim_reduction").getOrElse(null).toBoolean, paramsMap.get("dim_red_method").getOrElse(null),
+        paramsMap.get("pca_method").getOrElse(null), paramsMap.get("mds_method").getOrElse(null),
+        paramsMap.get("clustering").getOrElse(null).toBoolean, paramsMap.get("classification").getOrElse(null).toBoolean,
+        paramsMap.get("clustering_method").getOrElse(null), paramsMap.get("classificaion_method").getOrElse(null)
       )
 
       if (parameters.isFrequencies == false) {
@@ -268,44 +277,62 @@ object PopulationStratification{
         * Dimensionality Reduction
         */
 
+    val unsupervised = new Unsupervised(sc, sqlContext)
     if (parameters.isDimRed == true) {
       println("Dimensionality Reduction")
-      var ds : DataFrame= null
+
+      parameters.dimRedMethod match {
 
         /**
           * PCA
           */
 
-      if (parameters.isPCA == true) {
-        println(" PCA")
-        val dimRed = new Unsupervised(sc, sqlContext)
-        ds = gts.getDataSet(variantsRDDprunned)
-        ds = dimRed.pcaH2O(ds)
-        println(ds.count(), ds.columns.length)
-      }
-
+        case "PCA" =>{
+          println(" PCA")
+          ds = gts.getDataSet(variantsRDDprunned)
+          ds = unsupervised.pcaH2O(ds)
+          println(ds.count(), ds.columns.length)
+        }
         /**
           * MDS
           */
 
-      else if (parameters.isMDS == true) {
-        println(" MDS")
-        var snpMDS: RDD[Seq[Int]] = variantsRDDprunned.map {case (_, sortedVariants) => sortedVariants.map(_.alternateCount.toInt) }
-        snpMDS = snpMDS.transpose
+        case "MDS" => {
+          println(" MDS")
+          var snpMDS: RDD[Seq[Int]] = variantsRDDprunned.map {case (_, sortedVariants) => sortedVariants.map(_.alternateCount.toInt) }
+          snpMDS = snpMDS.transpose
 
-        val mds = new MDSReduction(sc, sqlContext)
-        val pc: RDD[Array[Double]] = sc.parallelize(mds.computeMDS(snpMDS, "classic"))
-        println("mds: ")
-        println(pc.count, pc.first.length)
+          val mds = new MDSReduction(sc, sqlContext)
+          val pc: RDD[Array[Double]] = sc.parallelize(mds.computeMDS(snpMDS, "classic"))
+          println("mds: ")
+          println(pc.count, pc.first.length)
 
-        val samplesSet: RDD[String] = variantsRDD.map(_._1)
-        val mdsRDD: RDD[(String, Array[Double])] = samplesSet.zip(pc)
+          val samplesSet: RDD[String] = variantsRDD.map(_._1)
+          val mdsRDD: RDD[(String, Array[Double])] = samplesSet.zip(pc)
 
-        ds = gts.getDataSet(mdsRDD)
-        println(ds.count(), ds.columns.length)
-        ds.show(50)
+          ds = gts.getDataSet(mdsRDD)
+          println(ds.count(), ds.columns.length)
+          ds.show(50)
+        }
       }
+    }
 
+    if (ds == null)
+      ds = gts.getDataSet(variantsRDDprunned)
+
+      /**
+        * Clustering
+        */
+
+    if (parameters.isClustering == true) {
+      println("Clustering")
+      parameters.clusterMethod match{
+        case "kmeans" => {
+          val k = parameters.popSet.length
+          val predicted : DataFrame = unsupervised.kMeansH2OTrain(ds, k)
+          // predicted.writecsv("")
+        }
+      }
     }
 
 

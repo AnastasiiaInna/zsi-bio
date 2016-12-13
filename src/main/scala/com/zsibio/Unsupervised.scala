@@ -21,9 +21,9 @@ trait UnsupervisedMethods {
   protected def getH2ODataFrame (schemaRDD: DataFrame) : Frame
   def splitDataFrame (dataSet: Frame, ratios: Array[Double]): (Frame, Frame)
   def splitDataFrame (dataSet: DataFrame, ratios: Array[Double]): (Frame, Frame)
-  def pcaH2O (schemaRDD: DataFrame, ratios: Array[Double], pcaMethod: Method): Frame
+  def pcaH2O (schemaRDD: DataFrame, pcaMethod: Method, ratios: Array[Double]): DataFrame
   def kMeansH2OTrain(dataSet: Frame, numberClusters: Int): DataFrame
-  def writecsv (dataSet: DataFrame, filename: String): Unit
+  def kMeansH2OTrain(dataSet: DataFrame, numberClusters: Int): DataFrame
 }
 
 @SerialVersionUID(15L)
@@ -45,7 +45,6 @@ class Unsupervised[T] (sc: SparkContext, sqlContext: SQLContext) extends Seriali
     val dataFrame = asH2OFrame(schemaRDD)
     dataFrame.replace(dataFrame.find("Region"), dataFrame.vec("Region").toCategoricalVec()).remove()
     dataFrame.update()
-    // dataFrame.vecs(Array.range(3, dataFrame.numCols())).map(i => i.toNumericVec)
   }
 
   def splitDataFrame (dataSet: Frame, ratios: Array[Double]) : (Frame, Frame) ={
@@ -60,9 +59,9 @@ class Unsupervised[T] (sc: SparkContext, sqlContext: SQLContext) extends Seriali
     splitDataFrame(dataSet, ratios)
   }
 
-  def pcaH2O (schemaRDD: DataFrame, ratios: Array[Double] = Array(.7), pcaMethod: Method = Method.GramSVD): Frame = {
+  def pcaH2O (schemaRDD: DataFrame, pcaMethod: Method = Method.GramSVD, ratios: Array[Double] = Array(.7)): DataFrame = {
     _dimensionalityRedMethod = "PCA_" + pcaMethod.toString
-    val dataSet = getH2ODataFrame(schemaRDD)
+    val dataSet : Frame = getH2ODataFrame(schemaRDD)
 
     var _ratios : Array[Double] = ratios
     if (pcaMethod == Method.GLRM) _ratios = Array(.5)
@@ -78,7 +77,7 @@ class Unsupervised[T] (sc: SparkContext, sqlContext: SQLContext) extends Seriali
     // pcaParameters._valid = validation._key
     pcaParameters._response_column = "Region"
     pcaParameters._ignored_columns = Array("SampleId")
-    pcaParameters._k = math.min(nFeatures, nObservations)
+    pcaParameters._k = 20// math.min(nFeatures, nObservations)
     pcaParameters._use_all_factor_levels = true
     pcaParameters._pca_method = pcaMethod
     pcaParameters._max_iterations = 100
@@ -89,6 +88,7 @@ class Unsupervised[T] (sc: SparkContext, sqlContext: SQLContext) extends Seriali
     val pcaModel = pcaObject.trainModel.get
 
     val pcaImportance = pcaModel._output._importance
+    println(pcaImportance)
     val pcaCumVariance = pcaImportance.getCellValues.toList(2).toList
     val pcaEigenvectors = pcaModel._output._eigenvectors
 
@@ -97,15 +97,16 @@ class Unsupervised[T] (sc: SparkContext, sqlContext: SQLContext) extends Seriali
     val intPcaCumVariance = pcaCumVariance.map(p => p.get().asInstanceOf[Double])
     val numberPC = intPcaCumVariance.filter(x => x <= totalVariancePerc).size
 
-    val prediction = pcaModel.score(training)
-    val pcaDs = prediction
+    val prediction = pcaModel.score(dataSet)
+    val pcaDS = prediction
 
-    pcaDs.remove(Array.range(numberPC, pcaEigenvectors.getColDim))
-    pcaDs.update()
+    pcaDS.remove(Array.range(numberPC, pcaEigenvectors.getColDim))
+    pcaDS.update()
 
-    pcaDs.add(Array("SampleId", "Region"), Array(training.vec("SampleId").toCategoricalVec(), training.vec("Region").toCategoricalVec()))
-    pcaDs.update()
+    pcaDS.add(Array("SampleId", "Region"), Array(dataSet.vec("SampleId").toCategoricalVec(), dataSet.vec("Region").toCategoricalVec()))
+    pcaDS.update()
 
+    asDataFrame(h2oContext.asH2OFrame(pcaDS))(sqlContext)
   }
 
   def kMeansH2OTrain(dataSet: Frame, numberClusters: Int): DataFrame = {
@@ -132,11 +133,9 @@ class Unsupervised[T] (sc: SparkContext, sqlContext: SQLContext) extends Seriali
     return _trainingFrame
   }
 
-  def writecsv (dataSet: DataFrame, filename: String): Unit ={
-    dataSet.write
-      .format("com.databricks.spark.csv")
-      .option("header", "true")
-      .save(filename)
+  def kMeansH2OTrain(dataSet: DataFrame, numberClusters: Int): DataFrame = {
+    val dataSetH2O : Frame = getH2ODataFrame(dataSet)
+    kMeansH2OTrain(dataSetH2O, numberClusters)
   }
 
   def getOutputParameters : OutputParameters ={
