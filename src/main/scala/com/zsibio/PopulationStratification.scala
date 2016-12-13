@@ -51,12 +51,16 @@ case class Parameters(
                      isPCA : Boolean,
                      pcaMethod : String,
                      isMDS : Boolean,
-                     mdsMethod : String
+                     mdsMethod : String,
+                     isClustering : Boolean,
+                     isClassification : Boolean,
+                     clusterMethod : String,
+                     classificationMethod : String
                      ){
   def this() = this("file:///home/anastasiia/1000genomes/ALL.chrMT.phase3_callmom-v0_4.20130502.genotypes.vcf.adam",
-    "file:///home/anastasiia/1000genomes/ALL.panel",
-      "super_pop", Array("AFR", "EUR", "AMR", "EAS", "SAS"),
-    0., true, 0.005, 1., true, "compsite", 0.2, 500000, Int.MaxValue, false, true, true, "GramSVD", false, null)
+    "file:///home/anastasiia/1000genomes/ALL.panel", "super_pop", Array("AFR", "EUR", "AMR", "EAS", "SAS"),
+    0., true, 0.005, 1., true, "compsite", 0.2, 500000, Int.MaxValue, false, true, true, "GramSVD", false, null,
+    true, false, "kmeans", null)
 }
 
 object PopulationStratification{
@@ -127,7 +131,9 @@ object PopulationStratification{
         paramsMap.get("ld_max_n").getOrElse(null).toInt, paramsMap.get("outliers").getOrElse(null).toBoolean,
         paramsMap.get("dim_reduction").getOrElse(null).toBoolean,
         paramsMap.get("pca").getOrElse(null).toBoolean, paramsMap.get("pca_method").getOrElse(null),
-        paramsMap.get("mds").getOrElse(null).toBoolean, paramsMap.get("mds_method").getOrElse(null)
+        paramsMap.get("mds").getOrElse(null).toBoolean, paramsMap.get("mds_method").getOrElse(null),
+        paramsMap.get("clustering").getOrElse(null).toBoolean, paramsMap.get("clustering_method").getOrElse(null),
+        paramsMap.get("classification").getOrElse(null).toBoolean, paramsMap.get("classificaion_method").getOrElse(null)
       )
 
       if (parameters.isFrequencies == false) {
@@ -272,7 +278,9 @@ object PopulationStratification{
 
       if (parameters.isPCA == true) {
         println(" PCA")
+        val dimRed = new Unsupervised(sc, sqlContext)
         ds = gts.getDataSet(variantsRDDprunned)
+        ds = dimRed.pcaH2O(ds)
         println(ds.count(), ds.columns.length)
       }
 
