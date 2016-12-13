@@ -35,6 +35,8 @@ case class TSNP(snpIdx: Long, snpId: String, snpPos: Int, snp: Vector[Int]){
 case class Parameters(
                      chrFile : String,
                      panelFile : String,
+                     pop : String,
+                     popSet : Array[String],
                      missingRate : Double,
                      isFrequencies : Boolean,
                      var infFreq : Double,
@@ -44,6 +46,7 @@ case class Parameters(
                      ldTreshold : Double,
                      ldMaxBp : Int,
                      ldMaxN : Int,
+                     isOutliers : Boolean,
                      isDimRed : Boolean,
                      isPCA : Boolean,
                      pcaMethod : String,
@@ -52,10 +55,24 @@ case class Parameters(
                      ){
   def this() = this("file:///home/anastasiia/1000genomes/ALL.chrMT.phase3_callmom-v0_4.20130502.genotypes.vcf.adam",
     "file:///home/anastasiia/1000genomes/ALL.panel",
-    0., true, 0.005, 1., true, "compsite", 0.2, 500000, Int.MaxValue, true, true, "GramSVD", false, null)
+      "super_pop", Array("AFR", "EUR", "AMR", "EAS", "SAS"),
+    0., true, 0.005, 1., true, "compsite", 0.2, 500000, Int.MaxValue, false, true, true, "GramSVD", false, null)
 }
 
-object Clustering{
+object PopulationStratification{
+
+  implicit class RDDOps[T](rdd: RDD[Seq[T]]) {
+    def transpose(): RDD[Seq[T]] = {
+      rdd.zipWithIndex.flatMap {
+        case (row, rowIndex) => row.zipWithIndex.map {
+          case (number, columnIndex) => columnIndex -> (rowIndex, number)
+        }
+      }.groupByKey.sortByKey().values.map {
+        indexedRow => indexedRow.toSeq.sortBy(_._1).map(_._2)
+      }
+    }
+  }
+
   def main(args: Array[String]): Unit = {
 
     val conf = new SparkConf().setAppName("PopStrat").setMaster("local").set("spark.ext.h2o.repl.enabled", "false")
@@ -102,30 +119,20 @@ object Clustering{
 
       parameters = new Parameters(
         paramsMap.get("chr_file").getOrElse(null), paramsMap.get("panel_file").getOrElse(null),
+        paramsMap.get("population").getOrElse(null), paramsMap.get("population_set").getOrElse(null).split("/"),
         paramsMap.get("missing_rate").getOrElse(null).toDouble, paramsMap.get("frequencies").getOrElse(null).toBoolean,
         paramsMap.get("inf_freq").getOrElse(null).toDouble, paramsMap.get("sup_freq").getOrElse(null).toDouble,
         paramsMap.get("ld_pruning").getOrElse(null).toBoolean, paramsMap.get("ld_method").getOrElse(null),
         paramsMap.get("ld_treshold").getOrElse(null).toDouble, paramsMap.get("ld_max_bp").getOrElse(null).toInt,
-        paramsMap.get("ld_max_n").getOrElse(null).toInt, paramsMap.get("dim_reduction").getOrElse(null).toBoolean,
+        paramsMap.get("ld_max_n").getOrElse(null).toInt, paramsMap.get("outliers").getOrElse(null).toBoolean,
+        paramsMap.get("dim_reduction").getOrElse(null).toBoolean,
         paramsMap.get("pca").getOrElse(null).toBoolean, paramsMap.get("pca_method").getOrElse(null),
         paramsMap.get("mds").getOrElse(null).toBoolean, paramsMap.get("mds_method").getOrElse(null)
       )
 
-      if (parameters.isLDPruning == true) {
+      if (parameters.isFrequencies == false) {
         parameters.infFreq = 0.
-        parameters.supFreq = 0.
-      }
-    }
-
-    implicit class RDDOps[T](rdd: RDD[Seq[T]]) {
-      def transpose(): RDD[Seq[T]] = {
-        rdd.zipWithIndex.flatMap {
-          case (row, rowIndex) => row.zipWithIndex.map {
-            case (number, columnIndex) => columnIndex -> (rowIndex, number)
-          }
-        }.groupByKey.sortByKey().values.map {
-          indexedRow => indexedRow.toSeq.sortBy(_._1).map(_._2)
-        }
+        parameters.supFreq = 1.
       }
     }
 
@@ -135,9 +142,7 @@ object Clustering{
         val sampledGts = gtsForSample.filter(g => (g.getVariant.getStart >= start && g.getVariant.getEnd <= end) )
         sampledGts.adamParquetSave("/home/anastasiia/1000genomes/chr22-sample_3000.adam")*/
 
-    val populations = Array("AFR", "EUR", "AMR", "EAS", "SAS")
-
-    def extract(file: String, superPop: String = "pop", filter: (String, String) => Boolean): Map[String, String] = {
+    def extract(file: String, superPop: String = "super_pop", filter: (String, String) => Boolean): Map[String, String] = {
       Source.fromFile(file).getLines().map(line => {
         val tokens = line.split("\t").toList
         if (superPop == "pop") {
@@ -149,7 +154,7 @@ object Clustering{
       ).toMap.filter(tuple => filter(tuple._1, tuple._2))
     }
 
-    val panel : Map[String, String] = extract(parameters.panelFile, "super_pop", (sampleID: String, pop: String) => populations.contains(pop))
+    val panel : Map[String, String] = extract(parameters.panelFile, parameters.pop, (sampleID: String, pop: String) => parameters.popSet.contains(pop))
     val bpanel = sc.broadcast(panel)
     val allGenotypes: RDD[Genotype] = sc.loadGenotypes(parameters.chrFile)
     val genotypes: RDD[Genotype] = allGenotypes.filter(genotype => {
@@ -160,11 +165,22 @@ object Clustering{
     val variantsRDD: RDD[(String, Array[SampleVariant])] = gts.sortedVariantsBySampelId
     println(s"Number of SNPs is ", variantsRDD.first()._2.length)
 
-    /* LDPruning */
+      /**
+        * Variables for prunning data. Used for both ldPruning and Outliers detection cases
+        */
 
+    var variantsRDDprunned: RDD[(String, Array[SampleVariant])] = variantsRDD
     var prunnedSnpIdSet: List[String] = null
 
+    def prun(rdd: RDD[(String, Array[SampleVariant])], snpIdSet: List[String]): RDD[(String, Array[SampleVariant])] =
+      rdd.map{ case (sample, sortedVariants) => (sample, sortedVariants.filter(varinat => snpIdSet contains (varinat.variantId)))}
+
+      /**
+        *  LDPruning
+        */
+
     if (parameters.isLDPruning == true) {
+      println("LD Pruning")
       val ldSize = 256
       val seq = sc.parallelize(0 until ldSize * ldSize)
       val ldPrun = new LDPruning(sc, sqlContext, seq)
@@ -175,18 +191,8 @@ object Clustering{
 
       val snpIdSet: RDD[(String, Long)] = sc.parallelize(variantsRDD.first()._2.map(_.variantId)).zipWithIndex()
 
-      def transposeRDD[T](rdd: RDD[Seq[T]]): RDD[Seq[T]] = {
-        rdd.zipWithIndex.flatMap {
-          case (row, rowIndex) => row.zipWithIndex.map {
-            case (number, columnIndex) => columnIndex -> (rowIndex, number)
-          }
-        }.groupByKey.sortByKey().values.map {
-          indexedRow => indexedRow.toSeq.sortBy(_._1).map(_._2)
-        }
-      }
-
       var snpSet: RDD[Seq[Int]] = variantsRDD.map { case (_, sortedVariants) => sortedVariants.map(_.alternateCount.toInt) }
-      snpSet = transposeRDD(snpSet)
+      snpSet = snpSet.transpose()
 
       def getListGeno(iditer: Iterator[(String, Long)], snpiter: Iterator[Seq[Int]]): Iterator[TSNP] = {
         var res = List[TSNP]()
@@ -204,26 +210,22 @@ object Clustering{
 
       prunnedSnpIdSet = ldPrun.performLDPruning(listGeno, parameters.ldMethod, parameters.ldTreshold, parameters.ldMaxBp, parameters.ldMaxN)
       println(prunnedSnpIdSet)
+      variantsRDDprunned = prun(variantsRDDprunned, prunnedSnpIdSet)
     }
 
-    /*LDPruning end*/
+      /**
+        * Outliers detection
+        */
 
-    var ds = gts.getDataSet(variantsRDD, prunnedSnpIdSet)
-    println(ds.count(), ds.columns.length)
+    if (parameters.isOutliers == true) {
+      println("Outliers Detections")
+      val samplesForOutliers: RDD[Seq[Int]] = variantsRDDprunned.map {case (_, sortedVariants) => sortedVariants.map(_.alternateCount.toInt) }
+      val n: Int = samplesForOutliers.count().toInt
+      val randomindx: RDD[List[Int]] = sc.parallelize((1 to n / 2).map(unused => Random.shuffle(0 to n - 1).take(n / 2).toList))
+      val rddWithIdx: RDD[(Seq[Int], Long)] = samplesForOutliers.zipWithIndex()
+      val subRDDs: RDD[Array[Seq[Int]]] = randomindx.map(idx => rddWithIdx.filter { case (_, sampleidx) => idx.contains(sampleidx) }.map(_._1).collect)
 
-    /* outliers */
-
-    var samplesForOutliers: RDD[Seq[Int]] = variantsRDD.map {
-      case (_, sortedVariants) =>
-        sortedVariants.filter(varinat => prunnedSnpIdSet contains(varinat.variantId)).map(_.alternateCount.toInt)
-    }
-
-    val n: Int = samplesForOutliers.count().toInt
-    val randomindx : RDD[List[Int]]         = sc.parallelize((1 to n/2).map(unused => Random.shuffle(0 to n - 1).take(n/2).toList))
-    val rddWithIdx : RDD[(Seq[Int], Long)]  = samplesForOutliers.zipWithIndex()
-    val subRDDs : RDD[Array[Seq[Int]]] = randomindx.map(idx => rddWithIdx.filter{case(_, sampleidx) => idx.contains(sampleidx)}.map(_._1).collect)
-
-/*    def computeMeanVar(iter: Iterator[Array[Seq[Int]]]) : Iterator[Array[(Double, Double)]] = {
+      /*    def computeMeanVar(iter: Iterator[Array[Seq[Int]]]) : Iterator[Array[(Double, Double)]] = {
       var meanVar: List[Array[(Double, Double)]] = List()
       while(iter.hasNext){
         val iterCurr = iter.next
@@ -240,55 +242,63 @@ object Clustering{
 
     val meanVar : RDD[Array[(Double, Double)]] = subRDDs.mapPartitions(computeMeanVar)*/
 
-    val meanVar : RDD[Array[(Double, Double)]] = subRDDs.map { currRDD =>
-      val meanStd : Array[(Double, Double)]= currRDD.map { row =>
-        val mean = row.sum / n.toDouble
-        val variance = row.map(score => (score - mean) * (score - mean))
-        val stddev = Math.sqrt(variance.sum / (n.toDouble - 1))
-        (mean, stddev)
+      val meanVar: RDD[Array[(Double, Double)]] = subRDDs.map { currRDD =>
+        val meanStd: Array[(Double, Double)] = currRDD.map { row =>
+          val mean = row.sum / n.toDouble
+          val variance = row.map(score => (score - mean) * (score - mean))
+          val stddev = Math.sqrt(variance.sum / (n.toDouble - 1))
+          (mean, stddev)
+        }
+        meanStd
       }
-      meanStd
+
+      meanVar.foreach(x => println(x.toList))
+
+      variantsRDDprunned = prun(variantsRDDprunned, prunnedSnpIdSet)
+      // println(subRDDs.length, subRDDs(0).count)
     }
 
-    meanVar.foreach(x => println(x.toList))
+      /**
+        * Dimensionality Reduction
+        */
 
-    // println(subRDDs.length, subRDDs(0).count)
-    /* outliers end*/
+    if (parameters.isDimRed == true) {
+      println("Dimensionality Reduction")
+      var ds : DataFrame= null
 
+        /**
+          * PCA
+          */
 
+      if (parameters.isPCA == true) {
+        println(" PCA")
+        ds = gts.getDataSet(variantsRDDprunned)
+        println(ds.count(), ds.columns.length)
+      }
 
+        /**
+          * MDS
+          */
 
+      else if (parameters.isMDS == true) {
+        println(" MDS")
+        var snpMDS: RDD[Seq[Int]] = variantsRDDprunned.map {case (_, sortedVariants) => sortedVariants.map(_.alternateCount.toInt) }
+        snpMDS = snpMDS.transpose
 
+        val mds = new MDSReduction(sc, sqlContext)
+        val pc: RDD[Array[Double]] = sc.parallelize(mds.computeMDS(snpMDS, "classic"))
+        println("mds: ")
+        println(pc.count, pc.first.length)
 
+        val samplesSet: RDD[String] = variantsRDD.map(_._1)
+        val mdsRDD: RDD[(String, Array[Double])] = samplesSet.zip(pc)
 
-/* MDS-------------------------------------------------------------------------------------------------------------
+        ds = gts.getDataSet(mdsRDD)
+        println(ds.count(), ds.columns.length)
+        ds.show(50)
+      }
 
-    /* mds */ // sql ds is input for
-
-    var snpMDS: RDD[Seq[Int]] = variantsRDD.map {
-      case (_, sortedVariants) =>
-        sortedVariants.filter(varinat => prunnedSnpIdSet contains(varinat.variantId)).map(_.alternateCount.toInt)
     }
-    snpMDS = transposeRDD(snpMDS)
-
-
-
-    val mds = new MDSReduction(sc, sqlContext)
-    val pc: RDD[Array[Double]]= sc.parallelize(mds.computeMDS(snpMDS, "classic"))
-    println("mds: ")
-    println(pc.count, pc.first.length)
-
-    val samplesSet: RDD[String] = variantsRDD.map(_._1)
-    val mdsRDD: RDD[(String, Array[Double])] = samplesSet.zip(pc)
-
-    ds = gts.getDataSet(mdsRDD)
-    println(ds.count(), ds.columns.length)
-    ds.show(50)
-
-    /* mds end*/
-
- MDS- ----------------------------------------------------------------------------------------------------------- */
-
 
 
 

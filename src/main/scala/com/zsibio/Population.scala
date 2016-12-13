@@ -49,6 +49,7 @@ class Population[T] (sc: SparkContext, sqlContext: SQLContext, genotypes: RDD[Ge
 
   val sampleCount: Long = variantsBySampleId.count()
 
+  /* Missing value treatment */
   private val variantsByVariantId: RDD[(String, Iterable[SampleVariant])] = variantsRDD.groupBy(_.variantId).filter {
     case (_, sampleVariants) => sampleVariants.size <= (sampleCount * (1 + _missingRate)).toInt
   }
@@ -93,7 +94,7 @@ class Population[T] (sc: SparkContext, sqlContext: SQLContext, genotypes: RDD[Ge
 
   def getDataSet(variants: RDD[(String, Array[Double])]) : DataFrame ={
     val pc = Array.fill(variants.first()._2.length)("PC")
-    val s = (1 until variants.first()._2.length)
+    val s = (1 until (variants.first()._2.length + 1))
     val headerPC = (pc, s).zipped.par.map{case(pc, s) => pc + s}
 
     val header = StructType(
