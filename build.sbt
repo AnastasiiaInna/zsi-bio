@@ -29,20 +29,29 @@ libraryDependencies ++= Seq(
   "spark.jobserver" % "job-server-api_2.10" % "0.5.2",
   "ai.h2o" % "sparkling-water-core_2.10" % sparkVersion,
   "ai.h2o" % "h2o-algos" % "3.8.2.11",
+  "org.apache.systemml" % "systemml" % "0.11.0-incubating"
+    exclude("org.apache.spark", "spark-core_2.10")
+    exclude("org.apache.hadoop", "hadoop-client")
+    exclude("org.apache.hadoop", "hadoop-mapreduce-client-core")
+    exclude("org.apache.hadoop", "hadoop-mapreduce-client-app")
+    exclude("org.apache.hadoop", "hadoop-mapreduce-client-jobclient")
+    exclude("org.apache.hadoop", "hadoop-yarn-api"),
   "com.databricks" % "spark-csv_2.10" % "1.5.0" % "provided",
-  "com.databricks" % "spark-csv_2.10" % "1.5.0"
+  "com.databricks" % "spark-csv_2.10" % "1.5.0",
+  "com.github.haifengl" % "smile-core" % "1.2.0",
+  "com.github.karlhigley" %% "spark-neighbors" % "0.2.2"
   // "org.ddahl" % "rscala_2.11" % "1.0.13"
-  // "co.theasi" % "plotly_2.10" % "0.1"
-  // "com.quantifind" %% "wisp" % "0.0.1"
+
 )
 
 resolvers ++= Seq(
-  "Job Server Bintray" at "https://dl.bintray.com/spark-jobserver/maven"
+  "Job Server Bintray" at "https://dl.bintray.com/spark-jobserver/maven",
+  "OSS Sonatype" at "https://repo1.maven.org/maven2/"
 )
 
 parallelExecution in Test := false
 
-mainClass in assembly := Some("com.zsibio.Clustering")
+mainClass in assembly := Some("com.zsibio.PopulationStratification")
 
 /*assemblyMergeStrategy in assembly := {
   case PathList("org", "apache", "hadoop", "yarn", xs@_*) => MergeStrategy.first
