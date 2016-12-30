@@ -1,7 +1,7 @@
 package com.zsibio
 
 import hex.{DataInfo, FrameSplitter}
-import hex.kmeans.KMeans
+import hex.kmeans.{KMeans, KMeansModel}
 import hex.kmeans.KMeansModel.KMeansParameters
 import hex.pca.PCA
 import hex.pca.PCAModel.PCAParameters
@@ -11,6 +11,7 @@ import org.apache.spark.h2o.H2OContext
 import org.apache.spark.sql.{DataFrame, SQLContext}
 import water.Key
 import water.fvec.Frame
+
 
 case class OutputParameters(dimentionalityRedMethod: String, clusterMethod: String, trainingFrame: DataFrame, SSW: Double, SSB: Double){
   def this(clusterMethod: String) = this(clusterMethod, null, null, 0, 0)
@@ -22,8 +23,9 @@ trait UnsupervisedMethods {
   def splitDataFrame (dataSet: Frame, ratios: Array[Double]): (Frame, Frame)
   def splitDataFrame (dataSet: DataFrame, ratios: Array[Double]): (Frame, Frame)
   def pcaH2O (schemaRDD: DataFrame, pcaMethod: Method, ratios: Array[Double]): DataFrame
-  def kMeansH2OTrain(dataSet: Frame, numberClusters: Int): DataFrame
-  def kMeansH2OTrain(dataSet: DataFrame, numberClusters: Int): DataFrame
+  def kMeansH2O(dataSet: Frame, numberClusters: Int, responseColumn: String, ignoredColumns: Array[String]): KMeansModel
+  def kMeansH2O(dataSet: DataFrame, numberClusters: Int, responseColumn: String = "Region", ignoredColumns: Array[String] = Array("SampleId")): KMeansModel
+  def kMeansPredict(model: KMeansModel, ds: DataFrame) : DataFrame
 }
 
 @SerialVersionUID(15L)
@@ -92,10 +94,10 @@ class Unsupervised[T] (sc: SparkContext, sqlContext: SQLContext) extends Seriali
     val pcaCumVariance = pcaImportance.getCellValues.toList(2).toList
     val pcaEigenvectors = pcaModel._output._eigenvectors
 
-    val totalVariancePerc : Double = .7
+    val totalVariancePerc : Double = .6
 
     val intPcaCumVariance = pcaCumVariance.map(p => p.get().asInstanceOf[Double])
-    val numberPC = intPcaCumVariance.filter(x => x <= totalVariancePerc).size
+    val numberPC = 10//intPcaCumVariance.filter(x => x <= totalVariancePerc).size
 
     val prediction = pcaModel.score(dataSet)
     val pcaDS = prediction
@@ -109,7 +111,7 @@ class Unsupervised[T] (sc: SparkContext, sqlContext: SQLContext) extends Seriali
     asDataFrame(h2oContext.asH2OFrame(pcaDS))(sqlContext)
   }
 
-  def kMeansH2OTrain(dataSet: Frame, numberClusters: Int): DataFrame = {
+  def kMeansH2O(dataSet: Frame, numberClusters: Int, responseColumn: String, ignoredColumns: Array[String]): KMeansModel = {
     val kmeansParameters = new KMeansParameters()
     kmeansParameters._train = dataSet._key
     kmeansParameters._response_column = "Region"
@@ -118,24 +120,26 @@ class Unsupervised[T] (sc: SparkContext, sqlContext: SQLContext) extends Seriali
 
     val kmeans = new KMeans(kmeansParameters)
     val kmeansModel = kmeans.trainModel().get()
+    kmeansModel
+  }
 
-    val kmeansPrediction = kmeansModel.score(dataSet)
+  def kMeansH2O(dataSet: DataFrame, numberClusters: Int, responseColumn: String = "Region", ignoredColumns: Array[String] = Array("SampleId")): KMeansModel = {
+    val dataSetH2O : Frame = getH2ODataFrame(dataSet)
+    kMeansH2O(dataSetH2O, numberClusters, responseColumn, ignoredColumns)
+  }
 
-    val predicted = dataSet
+  def kMeansPredict(model: KMeansModel, ds: DataFrame) : DataFrame ={
+    val dsH2O : Frame = getH2ODataFrame(ds)
+    val kmeansPrediction = model.score(dsH2O)
+
+    val predicted = dsH2O
     predicted.add("Predict", kmeansPrediction.vec("predict").toCategoricalVec)
     predicted.update()
 
-    _clusteringMethod = s"kmeans_$numberClusters"
     _trainingFrame = asDataFrame(h2oContext.asH2OFrame(predicted))(sqlContext)
-    _ssb = kmeansModel._output._betweenss
-    _ssw = kmeansModel._output._tot_withinss
 
     return _trainingFrame
-  }
 
-  def kMeansH2OTrain(dataSet: DataFrame, numberClusters: Int): DataFrame = {
-    val dataSetH2O : Frame = getH2ODataFrame(dataSet)
-    kMeansH2OTrain(dataSetH2O, numberClusters)
   }
 
   def getOutputParameters : OutputParameters ={

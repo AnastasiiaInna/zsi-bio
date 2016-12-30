@@ -7,7 +7,6 @@ package com.zsibio
 
 import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql._
 import org.bdgenomics.adam.rdd.ADAMContext._
 import org.bdgenomics.formats.avro.{Genotype}
 import org.apache.spark.sql.{DataFrame, SQLContext}
@@ -87,12 +86,14 @@ object PopulationStratification{
 
   def main(args: Array[String]): Unit = {
 
-    val conf = new SparkConf().setAppName("PopStrat").setMaster("local").set("spark.ext.h2o.repl.enabled", "false")
+    val conf = new SparkConf().setAppName("PopStrat").setMaster("local").set("spark.ext.h2o.repl.enabled", "false").set("spark.driver.maxResultSize", "0")
     val sc = new SparkContext(conf)
     val sqlContext = new SQLContext(sc)
     import sqlContext.implicits._
 
-    var ds : DataFrame= null
+    var ds : DataFrame = null
+    var trainingDS : DataFrame = null
+    var testDS : DataFrame = null
 
     var parametersFile : String = null
     var parameters : Parameters = null
@@ -142,7 +143,7 @@ object PopulationStratification{
         paramsMap.get("dim_reduction").getOrElse(null).toBoolean, paramsMap.get("dim_red_method").getOrElse(null),
         paramsMap.get("pca_method").getOrElse(null), paramsMap.get("mds_method").getOrElse(null),
         paramsMap.get("clustering").getOrElse(null).toBoolean, paramsMap.get("classification").getOrElse(null).toBoolean,
-        paramsMap.get("clustering_method").getOrElse(null), paramsMap.get("classificaion_method").getOrElse(null)
+        paramsMap.get("clustering_method").getOrElse(null), paramsMap.get("classification_method").getOrElse(null)
       )
 
       if (parameters.isFrequencies == false) {
@@ -320,20 +321,104 @@ object PopulationStratification{
     if (ds == null)
       ds = gts.getDataSet(variantsRDDprunned)
 
+    val seeds = 1234
+    var splitted = ds.randomSplit(Array(.7, 0.3), seeds)
+    trainingDS = splitted(0)
+    testDS = splitted(1)
+
       /**
         * Clustering
         */
 
     if (parameters.isClustering == true) {
       println("Clustering")
-      parameters.clusterMethod match{
+      var trainPrediction: DataFrame = null
+      var testPrediction: DataFrame = null
+      val clustering = new Clustering(sc, sqlContext)
+
+      parameters.clusterMethod match {
         case "kmeans" => {
           val k = parameters.popSet.length
-          val predicted : DataFrame = unsupervised.kMeansH2OTrain(ds, k)
-          // predicted.writecsv("")
+          val kMeansModel = unsupervised.kMeansH2O(trainingDS, k)
+          trainPrediction = unsupervised.kMeansPredict(kMeansModel, trainingDS)
+          testPrediction = unsupervised.kMeansPredict(kMeansModel, testDS)
+          testPrediction.select("Region", "Predict").show(20)
+        }
+
+        case "gmm" => {
+          val K = parameters.popSet.length
+          val gmmModel = clustering.gmm(trainingDS, Array("SampleId", "Region"), K)
+          trainPrediction = clustering.predict(gmmModel, trainingDS, Array("SampleId", "Region"))
+          testPrediction = clustering.predict(gmmModel, testDS, Array("SampleId", "Region"))
+        }
+
+        case "bkm" => {
+          val K = parameters.popSet.length
+          val bkmModel = clustering.bkm(trainingDS, Array("SampleId", "Region"), K)
+          trainPrediction = clustering.predict(bkmModel, trainingDS, Array("SampleId", "Region"))
+          testPrediction = clustering.predict(bkmModel, testDS, Array("SampleId", "Region"))
         }
       }
+
+      var purity = clustering.purity(trainPrediction.select("Region", "Predict"))
+      println($"Tratining purity: ", purity)
+      purity = clustering.purity(testPrediction.select("Region", "Predict"))
+      println($"Test purity: ", purity)
+
+      testPrediction.repartition(1).writecsv("/home/anastasiia/IdeaProjects/gmm_chr22.csv")
     }
+
+    /**
+      * Classification
+      */
+
+/*    val popFactorClass  = sc.parallelize(parameters.popSet).zipWithIndex.toDF("Region", "Class")
+    val dsClass = ds.join(popFactorClass, "Region").drop("SampleId").drop("Region")*/
+
+    splitted = ds.drop("SampleId").randomSplit(Array(0.7, 0.3), seeds)
+    trainingDS = splitted(0)
+    testDS  = splitted(1)
+
+    if (parameters.isClassification == true) {
+      println("Classification")
+      var predicted : DataFrame = null
+      var trainingError : Double = Double.NaN
+      var testError : Double = Double.NaN
+      val classification = new Classification(sc, sqlContext)
+
+      parameters.classificationMethod match {
+        case "svm" => {
+          val svmModel = classification.decisionTreesTuning(trainingDS)//, "Region", 10, Array(1.0))
+          classification.predict(svmModel, trainingDS)
+          trainingError = classification._error
+          classification.predict(svmModel, testDS)
+          testError = classification._error
+        }
+
+        case "dt" => {
+          val dtModel = classification.decisionTreesTuning(trainingDS)//, "Region", 10, Array(1.0))
+          classification.predict(dtModel, trainingDS)
+          trainingError = classification._error
+          classification.predict(dtModel, testDS)
+          testError = classification._error
+        }
+
+        case "rf" => {
+          val rfModel = classification.randomForestTuning(trainingDS)//, "Region", 10, Array(1.0))
+          classification.predict(rfModel, trainingDS)
+          trainingError = classification._error
+          classification.predict(rfModel, testDS)
+          testError = classification._error
+        }
+
+      }
+
+      println($"Tratining error: ", trainingError)
+      println($"Test error: ", testError)
+      predicted = classification._prediction
+      predicted.repartition(1).writecsv("/home/anastasiia/IdeaProjects/class_chr22.csv")
+    }
+
 
 
 
@@ -617,4 +702,5 @@ object PopulationStratification{
 
   }
 }
+
 
