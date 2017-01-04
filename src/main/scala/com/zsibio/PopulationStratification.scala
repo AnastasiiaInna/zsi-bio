@@ -5,15 +5,16 @@ package com.zsibio
 
   */
 
+import java.io.File
+
 import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.rdd.RDD
 import org.bdgenomics.adam.rdd.ADAMContext._
-import org.bdgenomics.formats.avro.{Genotype}
+import org.bdgenomics.formats.avro.Genotype
 import org.apache.spark.sql.{DataFrame, SQLContext}
-
 import org.apache.spark.ml.feature.VectorAssembler
 import org.apache.spark.ml.feature.StandardScaler
-import org.apache.spark.mllib.linalg.{Vectors}
+import org.apache.spark.mllib.linalg.Vectors
 import org.apache.spark.mllib.stat.{MultivariateStatisticalSummary, Statistics}
 
 import scala.util.Random
@@ -76,11 +77,18 @@ object PopulationStratification{
   }
 
   implicit class dfWriter(dataSet: DataFrame) {
-    def writecsv(filename: String): Unit = {
+    def writeToCsv(filename: String): Unit = {
+      val tmpParquetDir = "Posts.tmp.parquet"
       dataSet.write
         .format("com.databricks.spark.csv")
         .option("header", "true")
-        .save(filename)
+        .save(tmpParquetDir)
+
+      val dir = new File(tmpParquetDir)
+      val tmpTsvFile = tmpParquetDir + File.separatorChar + "part-00000"
+      (new File(tmpTsvFile)).renameTo(new File(filename))
+      dir.listFiles.foreach( f => f.delete )
+      dir.delete
     }
   }
 
@@ -97,6 +105,7 @@ object PopulationStratification{
 
     var parametersFile : String = null
     var parameters : Parameters = null
+    var outputFilename : String = null
 
     if (args.length == 0) {
       parameters = new Parameters()
@@ -108,6 +117,8 @@ object PopulationStratification{
       val keys = params.map(x => x(0)).collect
       val values = params.map(x => x(1)).collect
       val paramsMap = keys.zip(values).toMap
+
+      outputFilename = paramsMap.get("outputFilename").getOrElse(null)
 
       if (paramsMap.get("missing_rate").getOrElse(null).toDouble < 0. || paramsMap.get("inf_freq").getOrElse(null).toDouble < 0. || paramsMap.get("sup_freq").getOrElse(null).toDouble < 0.
       || paramsMap.get("ld_treshold").getOrElse(null).toDouble < 0. || paramsMap.get("ld_max_bp").getOrElse(null).toInt < 0 || paramsMap.get("ld_max_n").getOrElse(null).toInt < 0){
@@ -179,7 +190,7 @@ object PopulationStratification{
 
     val gts = new Population(sc, sqlContext, genotypes, panel, parameters.missingRate, parameters.infFreq, parameters.supFreq)
     val variantsRDD: RDD[(String, Array[SampleVariant])] = gts.sortedVariantsBySampelId
-    println(s"Number of SNPs is ", variantsRDD.first()._2.length)
+    println(s"Number of SNPs is ${variantsRDD.first()._2.length}")
 
       /**
         * Variables for prunning data. Used for both ldPruning and Outliers detection cases
@@ -322,7 +333,7 @@ object PopulationStratification{
       ds = gts.getDataSet(variantsRDDprunned)
 
     val seeds = 1234
-    var splitted = ds.randomSplit(Array(.7, 0.3), seeds)
+    var splitted = ds.randomSplit(Array(0.7, 0.3), seeds)
     trainingDS = splitted(0)
     testDS = splitted(1)
 
@@ -335,25 +346,35 @@ object PopulationStratification{
       var trainPrediction: DataFrame = null
       var testPrediction: DataFrame = null
       val clustering = new Clustering(sc, sqlContext)
+      val setK : RDD[Int] = sc.parallelize(Seq(1, 2, 3, 4, 5, 6, 7, 8, 9, 10))
 
       parameters.clusterMethod match {
         case "kmeans" => {
-          val k = parameters.popSet.length
-          val kMeansModel = unsupervised.kMeansH2O(trainingDS, k)
+          val kTuning = unsupervised.kMeansTuning(trainingDS, responseColumn = "Region", ignoredColumns = Array("SampleId"), kSet = setK, nReapeat = 5)
+          println("K estimation: ")
+          kTuning.foreach{case(k, purity) => println(s"k = ${k}, purity = ${purity}")}
+          val K = kTuning.maxBy(_._2)._1
+          val kMeansModel = unsupervised.kMeansH2O(trainingDS, K)
           trainPrediction = unsupervised.kMeansPredict(kMeansModel, trainingDS)
           testPrediction = unsupervised.kMeansPredict(kMeansModel, testDS)
           testPrediction.select("Region", "Predict").show(20)
         }
 
         case "gmm" => {
-          val K = parameters.popSet.length
+          val kTuning = clustering.gmmKTuning(trainingDS, Array("SampleId", "Region"), setK, nReapeat = 5)
+          println("K estimation: ")
+          kTuning.foreach{case(k, purity) => println(s"k = ${k}, purity = ${purity}")}
+          val K = kTuning.maxBy(_._2)._1
           val gmmModel = clustering.gmm(trainingDS, Array("SampleId", "Region"), K)
           trainPrediction = clustering.predict(gmmModel, trainingDS, Array("SampleId", "Region"))
           testPrediction = clustering.predict(gmmModel, testDS, Array("SampleId", "Region"))
         }
 
         case "bkm" => {
-          val K = parameters.popSet.length
+          val kTuning = clustering.bkmKTuning(trainingDS, Array("SampleId", "Region"), setK, nReapeat = 5)
+          println("K estimation: ")
+          kTuning.foreach{case(k, purity) => println(s"k = ${k}, purity = ${purity}")}
+          val K = kTuning.maxBy(_._2)._1
           val bkmModel = clustering.bkm(trainingDS, Array("SampleId", "Region"), K)
           trainPrediction = clustering.predict(bkmModel, trainingDS, Array("SampleId", "Region"))
           testPrediction = clustering.predict(bkmModel, testDS, Array("SampleId", "Region"))
@@ -365,7 +386,7 @@ object PopulationStratification{
       purity = clustering.purity(testPrediction.select("Region", "Predict"))
       println($"Test purity: ", purity)
 
-      testPrediction.repartition(1).writecsv("/home/anastasiia/IdeaProjects/gmm_chr22.csv")
+      testPrediction.repartition(1).writeToCsv(outputFilename)
     }
 
     /**
@@ -416,7 +437,7 @@ object PopulationStratification{
       println($"Tratining error: ", trainingError)
       println($"Test error: ", testError)
       predicted = classification._prediction
-      predicted.repartition(1).writecsv("/home/anastasiia/IdeaProjects/class_chr22.csv")
+      predicted.repartition(1).writeToCsv(outputFilename)
     }
 
 

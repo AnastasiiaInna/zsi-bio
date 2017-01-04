@@ -3,7 +3,7 @@ package com.zsibio
 import org.apache.spark.SparkContext
 import org.apache.spark.mllib.linalg.{Vector, Vectors}
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.{DataFrame, Row, SQLContext}
+import org.apache.spark.sql.{DataFrame, SQLContext}
 import org.apache.spark.mllib.clustering.{BisectingKMeans, BisectingKMeansModel, GaussianMixture, GaussianMixtureModel}
 
 /**
@@ -11,10 +11,13 @@ import org.apache.spark.mllib.clustering.{BisectingKMeans, BisectingKMeansModel,
   */
 
 trait ClusteringMethods {
-  def gmm(ds: DataFrame, categoricalVars : Array[String], K : Int, maxIteration: Int = 10): GaussianMixtureModel
-  def bkm(ds: DataFrame, categoricalVars : Array[String], K : Int, maxIteration: Int = 10): BisectingKMeansModel
+  def gmm(ds: DataFrame, categoricalVars : Array[String], K : Int, maxIteration: Int): GaussianMixtureModel
+  def bkm(ds: DataFrame, categoricalVars : Array[String], K : Int, maxIteration: Int): BisectingKMeansModel
   def predict(model: GaussianMixtureModel, ds: DataFrame, categoricalVars : Array[String]) : DataFrame
   def predict(model: BisectingKMeansModel, ds: DataFrame, categoricalVars : Array[String]) : DataFrame
+  def gmmKTuning(ds: DataFrame, categoricalVars : Array[String], kSet : RDD[Int], maxIteration: Int, nReapeat: Int): scala.collection.Map[Int, Double]
+  def bkmKTuning(ds: DataFrame, categoricalVars : Array[String], kSet : RDD[Int], maxIteration: Int, nReapeat: Int): scala.collection.Map[Int, Double]
+  def purity(ds: DataFrame): Double
 }
 
 @SerialVersionUID(15L)
@@ -23,14 +26,27 @@ class Clustering (sc: SparkContext, sqlContext: SQLContext) extends Serializable
   private def dfToRDD (ds: DataFrame, categoricalVars : Array[String]) : RDD[Vector] = {
     val arrsnps : Array[DataFrame] = categoricalVars.map{var d : DataFrame = ds; variable => {d = d.drop(variable); d}}
     val snps : DataFrame = arrsnps(arrsnps.length - 1)
-    snps.rdd.map(row => Vectors.dense(row.toSeq.toArray.map(x => x.asInstanceOf[Double]))).cache()
+    snps.rdd.map(row => Vectors.dense(row.toSeq.toArray.map(_.asInstanceOf[Double]))).cache()
+  }
+
+  def gmmKTuning(ds: DataFrame, categoricalVars : Array[String], kSet : RDD[Int], maxIteration: Int = 10, nReapeat: Int = 10): scala.collection.Map[Int, Double] = {
+    ds.show(10)
+    kSet.map(k => {
+      val purityAvg: Double  = (1 until nReapeat).map { _ =>
+        val split = ds.randomSplit(Array(0.7, 0.3), 1234)
+        val trainingSet = split(0)
+        val validationSet = split(1)
+
+        val model = gmm(trainingSet, categoricalVars, k, maxIteration)
+        val prediction = predict(model, validationSet, categoricalVars)
+        purity(prediction.select("Region", "Predict"))
+      }.sum / nReapeat
+      (k, purityAvg)
+    }).collectAsMap()
   }
 
   /* Gaussian Mixture */
   def gmm(ds: DataFrame, categoricalVars : Array[String], K : Int, maxIteration: Int = 10): GaussianMixtureModel ={
-    val infoSampleRegion = ds.select(categoricalVars.head, categoricalVars.tail: _*)
-    val sampleIDrdd : RDD[String] = infoSampleRegion.select("SampleId").rdd.map(row => row.mkString)//toString().substring(1, row.length - 2 ))
-
     val snpsRDD: RDD[Vector] = dfToRDD(ds, categoricalVars)
 
     val gmmParameters = new GaussianMixture()
@@ -41,10 +57,25 @@ class Clustering (sc: SparkContext, sqlContext: SQLContext) extends Serializable
     model
   }
 
+  def bkmKTuning(ds: DataFrame, categoricalVars : Array[String], kSet : RDD[Int], maxIteration: Int = 10, nReapeat: Int = 10): scala.collection.Map[Int, Double] = {
+    kSet.map(k => {
+      val purityAvg: Double  = (1 until nReapeat).map { _ =>
+        val split = ds.randomSplit(Array(0.7, 0.3), 1234)
+        val trainingSet = split(0)
+        val validationSet = split(1)
+
+        val model = bkm(trainingSet, categoricalVars, k, maxIteration)
+        val prediction = predict(model, validationSet, categoricalVars)
+        purity(prediction.select("Region", "Predict"))
+      }.sum / nReapeat
+      (k, purityAvg)
+    }).collectAsMap()
+  }
+
   /* Bisecting clustering */
   def bkm(ds: DataFrame, categoricalVars : Array[String], K : Int, maxIteration: Int = 10): BisectingKMeansModel = {
-
-    val sampleIDrdd : RDD[String] = ds.select("SampleId").rdd.map(row => row.mkString)//toString().substring(1, row.length - 2 ))
+    // val infoSampleRegion = ds.select(categoricalVars.head, categoricalVars.tail: _*)
+    // val sampleIdRdd : RDD[String] = ds.select("SampleId").rdd.map(row => row.mkString)//toString().substring(1, row.length - 2 ))
     val snpsRDD: RDD[Vector] = dfToRDD(ds, categoricalVars)
 
     val bkmParameters = new BisectingKMeans()
@@ -58,8 +89,7 @@ class Clustering (sc: SparkContext, sqlContext: SQLContext) extends Serializable
   def predict(model: GaussianMixtureModel, ds: DataFrame, categoricalVars : Array[String]) : DataFrame ={
     val sampleIDrdd : RDD[String] = ds.select("SampleId").rdd.map(row => row.mkString)//toString().substring(1, row.length - 2 ))
     val snpsRDD: RDD[Vector] = dfToRDD(ds, categoricalVars)
-    val clusters : RDD[Int] = model.predict(snpsRDD)//.map(cluster => ("Cluster", cluster))//.map(cluster => Vectors.dense(cluster.toDouble))
-    val predicted = sampleIDrdd.zip(clusters)//.map{(id, cluster) => (id, cluster)}
+    val predicted : RDD[(String, Int)] = sampleIDrdd.zip(snpsRDD).map{case(id, snp) => (id, model.predict(snp))}//.map{(id, cluster) => (id, cluster)}
     val clustersDF = sqlContext.createDataFrame(predicted).toDF("SampleId", "Predict")
     ds.join(clustersDF, "SampleId")
   }
@@ -67,19 +97,28 @@ class Clustering (sc: SparkContext, sqlContext: SQLContext) extends Serializable
   def predict(model: BisectingKMeansModel, ds: DataFrame, categoricalVars : Array[String]) : DataFrame = {
     val sampleIDrdd : RDD[String] = ds.select("SampleId").rdd.map(row => row.mkString)//toString().substring(1, row.length - 2 ))
     val snpsRDD: RDD[Vector] = dfToRDD(ds, categoricalVars)
-    val clusters: RDD[Int] = model.predict(snpsRDD) //.map(cluster => ("Cluster", cluster))//.map(cluster => Vectors.dense(cluster.toDouble))
-    val predicted = sampleIDrdd.zip(clusters) //.map{(id, cluster) => (id, cluster)}
+    val predicted : RDD[(String, Int)] = sampleIDrdd.zip(snpsRDD).map{case(id, snp) => (id, model.predict(snp))} //.map{(id, cluster) => (id, cluster)}
     val clustersDF = sqlContext.createDataFrame(predicted).toDF("SampleId", "Predict")
     ds.join(clustersDF, "SampleId")
   }
 
   def purity(ds: DataFrame): Double = {
     val sampleCnt = ds.count()
-    val labelPredictPair = ds.map(row => (row(0), row(1)))
+    val labelPredictPair = ds.map(row => (row(1), row(0)))
     val classesCntInCluster = labelPredictPair.map((_, 1L)).reduceByKey(_ + _).map{ case ((k, v), cnt) => (k, (v, cnt))}.groupByKey
     val majorityClassesinCLuster = classesCntInCluster.map{case(_, pairs) => pairs.maxBy(_._2)}
-    val correctlyAssignedSUm = majorityClassesinCLuster.values.sum()
-    return (correctlyAssignedSUm / sampleCnt)
+    val correctlyAssignedSum = majorityClassesinCLuster.values.sum()
+    return (correctlyAssignedSum / sampleCnt)
+  }
+
+  def randIndex(ds: DataFrame): Double = {
+    val sampleCnt = ds.count()
+    val labelPredictPair = ds.map(row => (row(0), row(1)))
+    val labelPredictCnt = labelPredictPair.map((_, 1L)).reduceByKey(_ + _)
+      // val majorityClassesinCLuster = classesCntInCluster.map{case(_, pairs) => pairs.maxBy(_._2)}
+   // val correctlyAssignedSum = majorityClassesinCLuster.values.sum()
+   // return (correctlyAssignedSum / sampleCnt)
+    0
   }
 }
 

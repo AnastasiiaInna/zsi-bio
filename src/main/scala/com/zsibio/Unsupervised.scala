@@ -8,6 +8,7 @@ import hex.pca.PCAModel.PCAParameters
 import hex.pca.PCAModel.PCAParameters.Method
 import org.apache.spark.SparkContext
 import org.apache.spark.h2o.H2OContext
+import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{DataFrame, SQLContext}
 import water.Key
 import water.fvec.Frame
@@ -24,8 +25,9 @@ trait UnsupervisedMethods {
   def splitDataFrame (dataSet: DataFrame, ratios: Array[Double]): (Frame, Frame)
   def pcaH2O (schemaRDD: DataFrame, pcaMethod: Method, ratios: Array[Double]): DataFrame
   def kMeansH2O(dataSet: Frame, numberClusters: Int, responseColumn: String, ignoredColumns: Array[String]): KMeansModel
-  def kMeansH2O(dataSet: DataFrame, numberClusters: Int, responseColumn: String = "Region", ignoredColumns: Array[String] = Array("SampleId")): KMeansModel
+  def kMeansH2O(dataSet: DataFrame, numberClusters: Int, responseColumn: String, ignoredColumns: Array[String]): KMeansModel
   def kMeansPredict(model: KMeansModel, ds: DataFrame) : DataFrame
+  def kMeansTuning(ds: DataFrame, responseColumn: String, ignoredColumns: Array[String], kSet : RDD[Int], nReapeat: Int): scala.collection.Map[Int, Double]
 }
 
 @SerialVersionUID(15L)
@@ -97,7 +99,7 @@ class Unsupervised[T] (sc: SparkContext, sqlContext: SQLContext) extends Seriali
     val totalVariancePerc : Double = .6
 
     val intPcaCumVariance = pcaCumVariance.map(p => p.get().asInstanceOf[Double])
-    val numberPC = 10//intPcaCumVariance.filter(x => x <= totalVariancePerc).size
+    val numberPC = 3//intPcaCumVariance.filter(x => x <= totalVariancePerc).size
 
     val prediction = pcaModel.score(dataSet)
     val pcaDS = prediction
@@ -141,6 +143,23 @@ class Unsupervised[T] (sc: SparkContext, sqlContext: SQLContext) extends Seriali
     return _trainingFrame
 
   }
+
+  def kMeansTuning(ds: DataFrame, responseColumn: String, ignoredColumns: Array[String], kSet : RDD[Int], nReapeat: Int = 10): scala.collection.Map[Int, Double] = {
+    kSet.map(k => {
+      val purityAvg: Double  = (1 until nReapeat).map { _ =>
+        val split = ds.randomSplit(Array(.7, 0.3), 1234)
+        val trainingSet = split(0)
+        val validationSet = split(1)
+
+        val model = kMeansH2O(trainingSet, k, responseColumn, ignoredColumns)
+        val prediction = kMeansPredict(model, validationSet)
+
+        Clustering(sc, sqlContext).purity(prediction.select("Region", "Predict"))
+      }.sum / nReapeat
+      (k, purityAvg)
+    }).collectAsMap()
+  }
+
 
   def getOutputParameters : OutputParameters ={
     new OutputParameters(_dimensionalityRedMethod, _clusteringMethod, _trainingFrame, _ssw,  _ssb)
