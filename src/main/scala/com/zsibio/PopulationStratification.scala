@@ -7,6 +7,7 @@ package com.zsibio
 
 import java.io.File
 
+import org.apache.spark.ml.PipelineModel
 import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.rdd.RDD
 import org.bdgenomics.adam.rdd.ADAMContext._
@@ -16,6 +17,7 @@ import org.apache.spark.ml.feature.VectorAssembler
 import org.apache.spark.ml.feature.StandardScaler
 import org.apache.spark.mllib.linalg.Vectors
 import org.apache.spark.mllib.stat.{MultivariateStatisticalSummary, Statistics}
+import org.apache.spark.ml.classification.DecisionTreeClassificationModel
 
 import scala.util.Random
 // import org.apache.spark.mllib.linalg.{LinalgShim, SparseVector, Vector, Vectors}
@@ -346,7 +348,7 @@ object PopulationStratification{
       var trainPrediction: DataFrame = null
       var testPrediction: DataFrame = null
       val clustering = new Clustering(sc, sqlContext)
-      val setK : RDD[Int] = sc.parallelize(Seq(1, 2, 3, 4, 5, 6, 7, 8, 9, 10))
+      val setK : Seq[Int] = Seq(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
 
       parameters.clusterMethod match {
         case "kmeans" => {
@@ -409,7 +411,7 @@ object PopulationStratification{
 
       parameters.classificationMethod match {
         case "svm" => {
-          val svmModel = classification.decisionTreesTuning(trainingDS)//, "Region", 10, Array(1.0))
+          val svmModel = classification.svmTuning(trainingDS)//, "Region", 10, Array(1.0))
           classification.predict(svmModel, trainingDS)
           trainingError = classification._error
           classification.predict(svmModel, testDS)
@@ -418,6 +420,10 @@ object PopulationStratification{
 
         case "dt" => {
           val dtModel = classification.decisionTreesTuning(trainingDS)//, "Region", 10, Array(1.0))
+          // val bestModel = dtModel.bestModel.asInstanceOf[PipelineModel]
+          // val dtStage = bestModel.stages(1).asInstanceOf[DecisionTreeClassificationModel]
+          // println(s"Learned the best classification tree model: ${dtStage.toDebugString}")
+
           classification.predict(dtModel, trainingDS)
           trainingError = classification._error
           classification.predict(dtModel, testDS)

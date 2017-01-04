@@ -27,7 +27,7 @@ trait UnsupervisedMethods {
   def kMeansH2O(dataSet: Frame, numberClusters: Int, responseColumn: String, ignoredColumns: Array[String]): KMeansModel
   def kMeansH2O(dataSet: DataFrame, numberClusters: Int, responseColumn: String, ignoredColumns: Array[String]): KMeansModel
   def kMeansPredict(model: KMeansModel, ds: DataFrame) : DataFrame
-  def kMeansTuning(ds: DataFrame, responseColumn: String, ignoredColumns: Array[String], kSet : RDD[Int], nReapeat: Int): scala.collection.Map[Int, Double]
+  def kMeansTuning(ds: DataFrame, responseColumn: String, ignoredColumns: Array[String], kSet: Seq[Int], nReapeat: Int): scala.collection.Map[Int, Double]
 }
 
 @SerialVersionUID(15L)
@@ -99,7 +99,7 @@ class Unsupervised[T] (sc: SparkContext, sqlContext: SQLContext) extends Seriali
     val totalVariancePerc : Double = .6
 
     val intPcaCumVariance = pcaCumVariance.map(p => p.get().asInstanceOf[Double])
-    val numberPC = 3//intPcaCumVariance.filter(x => x <= totalVariancePerc).size
+    val numberPC = intPcaCumVariance.filter(x => x <= totalVariancePerc).size
 
     val prediction = pcaModel.score(dataSet)
     val pcaDS = prediction
@@ -144,9 +144,9 @@ class Unsupervised[T] (sc: SparkContext, sqlContext: SQLContext) extends Seriali
 
   }
 
-  def kMeansTuning(ds: DataFrame, responseColumn: String, ignoredColumns: Array[String], kSet : RDD[Int], nReapeat: Int = 10): scala.collection.Map[Int, Double] = {
+  def kMeansTuning(ds: DataFrame, responseColumn: String, ignoredColumns: Array[String], kSet: Seq[Int], nReapeat: Int = 10): scala.collection.Map[Int, Double] = {
     kSet.map(k => {
-      val purityAvg: Double  = (1 until nReapeat).map { _ =>
+      val purityAvg: Double  = (0 until nReapeat).par.map { _ =>
         val split = ds.randomSplit(Array(.7, 0.3), 1234)
         val trainingSet = split(0)
         val validationSet = split(1)
@@ -157,7 +157,7 @@ class Unsupervised[T] (sc: SparkContext, sqlContext: SQLContext) extends Seriali
         Clustering(sc, sqlContext).purity(prediction.select("Region", "Predict"))
       }.sum / nReapeat
       (k, purityAvg)
-    }).collectAsMap()
+    }).sortBy(_._2).toMap
   }
 
 

@@ -15,8 +15,8 @@ trait ClusteringMethods {
   def bkm(ds: DataFrame, categoricalVars : Array[String], K : Int, maxIteration: Int): BisectingKMeansModel
   def predict(model: GaussianMixtureModel, ds: DataFrame, categoricalVars : Array[String]) : DataFrame
   def predict(model: BisectingKMeansModel, ds: DataFrame, categoricalVars : Array[String]) : DataFrame
-  def gmmKTuning(ds: DataFrame, categoricalVars : Array[String], kSet : RDD[Int], maxIteration: Int, nReapeat: Int): scala.collection.Map[Int, Double]
-  def bkmKTuning(ds: DataFrame, categoricalVars : Array[String], kSet : RDD[Int], maxIteration: Int, nReapeat: Int): scala.collection.Map[Int, Double]
+  def gmmKTuning(ds: DataFrame, categoricalVars : Array[String], kSet : Seq[Int], maxIteration: Int, nReapeat: Int): scala.collection.Map[Int, Double]
+  def bkmKTuning(ds: DataFrame, categoricalVars : Array[String], kSet : Seq[Int], maxIteration: Int, nReapeat: Int): scala.collection.Map[Int, Double]
   def purity(ds: DataFrame): Double
 }
 
@@ -29,10 +29,9 @@ class Clustering (sc: SparkContext, sqlContext: SQLContext) extends Serializable
     snps.rdd.map(row => Vectors.dense(row.toSeq.toArray.map(_.asInstanceOf[Double]))).cache()
   }
 
-  def gmmKTuning(ds: DataFrame, categoricalVars : Array[String], kSet : RDD[Int], maxIteration: Int = 10, nReapeat: Int = 10): scala.collection.Map[Int, Double] = {
-    ds.show(10)
+  def gmmKTuning(ds: DataFrame, categoricalVars : Array[String], kSet : Seq[Int], maxIteration: Int = 10, nReapeat: Int = 10): scala.collection.Map[Int, Double] = {
     kSet.map(k => {
-      val purityAvg: Double  = (1 until nReapeat).map { _ =>
+      val purityAvg: Double  = (0 until nReapeat).par.map { _ =>
         val split = ds.randomSplit(Array(0.7, 0.3), 1234)
         val trainingSet = split(0)
         val validationSet = split(1)
@@ -42,7 +41,7 @@ class Clustering (sc: SparkContext, sqlContext: SQLContext) extends Serializable
         purity(prediction.select("Region", "Predict"))
       }.sum / nReapeat
       (k, purityAvg)
-    }).collectAsMap()
+    }).sortBy(_._2).toMap
   }
 
   /* Gaussian Mixture */
@@ -57,9 +56,9 @@ class Clustering (sc: SparkContext, sqlContext: SQLContext) extends Serializable
     model
   }
 
-  def bkmKTuning(ds: DataFrame, categoricalVars : Array[String], kSet : RDD[Int], maxIteration: Int = 10, nReapeat: Int = 10): scala.collection.Map[Int, Double] = {
+  def bkmKTuning(ds: DataFrame, categoricalVars : Array[String], kSet : Seq[Int], maxIteration: Int = 10, nReapeat: Int = 10): scala.collection.Map[Int, Double] = {
     kSet.map(k => {
-      val purityAvg: Double  = (1 until nReapeat).map { _ =>
+      val purityAvg: Double  = (0 until nReapeat).par.map { _ =>
         val split = ds.randomSplit(Array(0.7, 0.3), 1234)
         val trainingSet = split(0)
         val validationSet = split(1)
@@ -69,7 +68,7 @@ class Clustering (sc: SparkContext, sqlContext: SQLContext) extends Serializable
         purity(prediction.select("Region", "Predict"))
       }.sum / nReapeat
       (k, purityAvg)
-    }).collectAsMap()
+    }).sortBy(_._2).toMap
   }
 
   /* Bisecting clustering */
