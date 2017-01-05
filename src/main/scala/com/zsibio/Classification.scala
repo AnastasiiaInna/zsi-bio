@@ -14,7 +14,7 @@ import org.apache.spark.ml.tuning.{CrossValidator, CrossValidatorModel, ParamGri
 import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
 import org.apache.spark.ml.classification.DecisionTreeClassifier
 import org.apache.spark.ml.classification.RandomForestClassifier
-import org.apache.spark.mllib.evaluation.MulticlassMetrics
+import org.apache.spark.mllib.evaluation.{MulticlassMetrics, MultilabelMetrics}
 import org.apache.sysml.api.ml.SVM
 
 
@@ -163,21 +163,23 @@ class Classification (sc: SparkContext, sqlContext: SQLContext) extends Serializ
 
   def predict(model: CrossValidatorModel, ds: DataFrame, labels: String = "Region") : Unit = {
     _prediction = model.transform(ds).drop("features")
-    _error = (1 - _evaluator.evaluate(_prediction)) * 100
+    _error = 1 - _evaluator.evaluate(_prediction)
   }
 
   def getMetrics(ds: DataFrame) : Unit ={
     val prediction = ds.select("prediction").rdd.map(row => row.getAs[Double]("prediction"))
     val trueLabels = ds.select("label").rdd.map(row => row.getAs[Double]("label"))
     val predictionAndLabels = prediction.zip(trueLabels)
-
+    val scoreAndLabels = predictionAndLabels.map{case(pred, label) => (Array(pred), Array(label))}
+    
     val metrics = new MulticlassMetrics(predictionAndLabels)
+    val metricsA = new MultilabelMetrics(scoreAndLabels)
 
     println("Confusion matrix:")
     println(metrics.confusionMatrix)
-    println(s"Recall = ${metrics.recall}")
-    println(s"Precision = ${metrics.precision}")
-    println(s"F measure = ${metrics.fMeasure}")
+    println(s"Precision = ${metricsA.microPrecision}")
+    println(s"Recall = ${metricsA.microRecall}")
+    println(s"F measure = ${metricsA.microF1Measure}")
   }
 
 

@@ -7,6 +7,8 @@ package com.zsibio
 
 import java.io.File
 
+import org.apache.spark.ml.PipelineModel
+import org.apache.spark.ml.classification.{DecisionTreeClassificationModel, RandomForestClassificationModel}
 import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.rdd.RDD
 import org.bdgenomics.adam.rdd.ADAMContext._
@@ -14,6 +16,8 @@ import org.bdgenomics.formats.avro.Genotype
 import org.apache.spark.sql.{DataFrame, SQLContext}
 import org.apache.spark.mllib.evaluation.MulticlassMetrics
 import org.apache.spark.mllib.regression.LabeledPoint
+import org.apache.sysml.api.ml.SVMModel
+import smile.classification.RandomForest
 
 import scala.util.Random
 import scala.io.Source
@@ -401,7 +405,10 @@ object PopulationStratification{
       parameters.classificationMethod match {
         case "svm" => {
           val svmModel = classification.svm(trainingDS)
-          println ("done")
+          val bestModel = svmModel.bestModel.asInstanceOf[PipelineModel]
+          val dtStage = bestModel.stages(2).asInstanceOf[SVMModel]
+          println(s"The best  learned classification SVM model: ${dtStage.mloutput}")
+
           classification.predict(svmModel, trainingDS)
           trainingError = classification._error
           trainingPrediction = classification._prediction
@@ -412,9 +419,9 @@ object PopulationStratification{
 
         case "dt" => {
           val dtModel = classification.decisionTrees(trainingDS)//, "Region", 10, Array(1.0))
-          // val bestModel = dtModel.bestModel.asInstanceOf[PipelineModel]
-          // val dtStage = bestModel.stages(1).asInstanceOf[DecisionTreeClassificationModel]
-          // println(s"Learned the best classification tree model: ${dtStage.toDebugString}")
+          val bestModel = dtModel.bestModel.asInstanceOf[PipelineModel]
+          val dtStage = bestModel.stages(2).asInstanceOf[DecisionTreeClassificationModel]
+          println(s"The best  learned classification tree model: ${dtStage.toDebugString}")
 
           classification.predict(dtModel, trainingDS)
           trainingError = classification._error
@@ -426,6 +433,12 @@ object PopulationStratification{
 
         case "rf" => {
           val rfModel = classification.randomForest(trainingDS)
+
+          val bestModel = rfModel.bestModel.asInstanceOf[PipelineModel]
+          val dtStage = bestModel.stages(2).asInstanceOf[RandomForestClassificationModel]
+          println(s"The best  learned classification random forest model: ${dtStage.toDebugString}")
+
+
           classification.predict(rfModel, trainingDS)
           trainingError = classification._error
           trainingPrediction = classification._prediction
@@ -438,11 +451,11 @@ object PopulationStratification{
 
       testPrediction.repartition(1).writeToCsv(outputFilename)
 
-      println("Training evaluation: ")
+      println("\nTraining evaluation: ")
       classification.getMetrics(trainingPrediction)
       println($"Error = $trainingError")
 
-      println("Test evaluation: ")
+      println("\nTest evaluation: ")
       classification.getMetrics(testPrediction)
       println($"Error = $testError")
 
