@@ -7,28 +7,16 @@ package com.zsibio
 
 import java.io.File
 
-import org.apache.spark.ml.PipelineModel
 import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.rdd.RDD
 import org.bdgenomics.adam.rdd.ADAMContext._
 import org.bdgenomics.formats.avro.Genotype
 import org.apache.spark.sql.{DataFrame, SQLContext}
-import org.apache.spark.ml.feature.VectorAssembler
-import org.apache.spark.ml.feature.StandardScaler
-import org.apache.spark.mllib.linalg.Vectors
-import org.apache.spark.mllib.stat.{MultivariateStatisticalSummary, Statistics}
-import org.apache.spark.ml.classification.DecisionTreeClassificationModel
+import org.apache.spark.mllib.evaluation.MulticlassMetrics
+import org.apache.spark.mllib.regression.LabeledPoint
 
 import scala.util.Random
-// import org.apache.spark.mllib.linalg.{LinalgShim, SparseVector, Vector, Vectors}
-import org.apache.spark.mllib.linalg.distributed.{CoordinateMatrix, MatrixEntry, RowMatrix}
-import breeze.linalg.{DenseVector, norm}
-
 import scala.io.Source
-import scala.reflect._
-import smile.mds.MDS
-
-import scala.collection.immutable.Range.inclusive
 
 case class TSNP(snpIdx: Long, snpId: String, snpPos: Int, snp: Vector[Int]){
   def this(snpIdx: Long, snpId: String, snpPos: Int) = this(snpIdx, snpId, snpPos, null)
@@ -335,9 +323,9 @@ object PopulationStratification{
       ds = gts.getDataSet(variantsRDDprunned)
 
     val seeds = 1234
-    var splitted = ds.randomSplit(Array(0.7, 0.3), seeds)
-    trainingDS = splitted(0)
-    testDS = splitted(1)
+    var split = ds.randomSplit(Array(0.7, 0.3), seeds)
+    trainingDS = split(0)
+    testDS = split(1)
 
       /**
         * Clustering
@@ -398,9 +386,9 @@ object PopulationStratification{
 /*    val popFactorClass  = sc.parallelize(parameters.popSet).zipWithIndex.toDF("Region", "Class")
     val dsClass = ds.join(popFactorClass, "Region").drop("SampleId").drop("Region")*/
 
-    splitted = ds.drop("SampleId").randomSplit(Array(0.7, 0.3), seeds)
-    trainingDS = splitted(0)
-    testDS  = splitted(1)
+    split = ds.drop("SampleId").randomSplit(Array(0.7, 0.3), seeds)
+    trainingDS = split(0)
+    testDS  = split(1)
 
     if (parameters.isClassification == true) {
       println("Classification")
@@ -411,7 +399,8 @@ object PopulationStratification{
 
       parameters.classificationMethod match {
         case "svm" => {
-          val svmModel = classification.svmTuning(trainingDS)//, "Region", 10, Array(1.0))
+          val svmModel = classification.svm(trainingDS)
+          println ("done")
           classification.predict(svmModel, trainingDS)
           trainingError = classification._error
           classification.predict(svmModel, testDS)
@@ -419,7 +408,7 @@ object PopulationStratification{
         }
 
         case "dt" => {
-          val dtModel = classification.decisionTreesTuning(trainingDS)//, "Region", 10, Array(1.0))
+          val dtModel = classification.decisionTrees(trainingDS)//, "Region", 10, Array(1.0))
           // val bestModel = dtModel.bestModel.asInstanceOf[PipelineModel]
           // val dtStage = bestModel.stages(1).asInstanceOf[DecisionTreeClassificationModel]
           // println(s"Learned the best classification tree model: ${dtStage.toDebugString}")
@@ -431,7 +420,7 @@ object PopulationStratification{
         }
 
         case "rf" => {
-          val rfModel = classification.randomForestTuning(trainingDS)//, "Region", 10, Array(1.0))
+          val rfModel = classification.randomForest(trainingDS)
           classification.predict(rfModel, trainingDS)
           trainingError = classification._error
           classification.predict(rfModel, testDS)
@@ -441,9 +430,26 @@ object PopulationStratification{
       }
 
       println($"Tratining error: ", trainingError)
-      println($"Test error: ", testError)
+
+
       predicted = classification._prediction
+
       predicted.repartition(1).writeToCsv(outputFilename)
+
+      val prediction = predicted.select("prediction").rdd.map(row => row.getAs[Double]("prediction"))
+      val trueLabels = predicted.select("label").rdd.map(row => row.getAs[Double]("label"))
+      val predictionAndLabels = prediction.zip(trueLabels)
+
+      val metrics = new MulticlassMetrics(predictionAndLabels)
+
+      println("Confusion matrix:")
+      println(metrics.confusionMatrix)
+
+      println($"Test error = $testError")
+      println(s"Recall = ${metrics.recall}")
+      println(s"Precision = ${metrics.precision}")
+      println(s"F measure = ${metrics.fMeasure}")
+
     }
 
 

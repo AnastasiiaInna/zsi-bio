@@ -8,8 +8,7 @@ import org.apache.spark.SparkContext
 import org.apache.spark.sql.{DataFrame, SQLContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.mllib.linalg.{Vector, Vectors}
-import org.apache.spark.ml.feature.{HashingTF, Tokenizer}
-import org.apache.spark.ml.feature.{StringIndexer, IndexToString, VectorIndexer}
+import org.apache.spark.ml.feature._
 import org.apache.spark.ml.Pipeline
 import org.apache.spark.ml.tuning.{CrossValidator, CrossValidatorModel, ParamGridBuilder}
 import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
@@ -22,6 +21,8 @@ class Classification (sc: SparkContext, sqlContext: SQLContext) extends Serializ
 
   var _prediction : DataFrame = null
   var _error : Double = Double.NaN
+  var _trainingError : Double = Double.NaN
+  var _testingError : Double = Double.NaN
   var _evaluator : MulticlassClassificationEvaluator = null
 
   private def transformDF(ds: DataFrame, labels: String) : DataFrame ={
@@ -31,27 +32,37 @@ class Classification (sc: SparkContext, sqlContext: SQLContext) extends Serializ
     transformedDS
   }
 
-  def svmTuning (dsX: DataFrame, labels: String = "Region", nFolds: Int = 10,  cost: Array[Double] = Array(0.01, 0.1, 10), icpt: Array[Int] = Array(0), tol : Array[Double] = Array(0.01), maxIter: Array[Int]= Array(10)) : CrossValidatorModel ={
-    val ds = transformDF(dsX, labels)
-    //val svmParameters = new SVM("svm", sc, isMultiClass = true).setRegParam(cost).setMaxIter(maxIter)
-    // val modelSVM = svmParameters.fit(ds)
-    // model.transform(ds).show()
-    val labelIndexer = new StringIndexer().setInputCol("label").setOutputCol("indexedLabel").fit(ds)
+  def svm(ds: DataFrame, labels: String = "Region", nFolds: Int = 10,  cost: Array[Double] = Array(0.01, 0.1, 10), icpt: Array[Int] = Array(0), tol : Array[Double] = Array(0.01), maxIter: Array[Int]= Array(10)) : CrossValidatorModel ={
+    val labelIndexer = new StringIndexer()
+      .setInputCol(labels)
+      .setOutputCol("label")
+      .fit(ds)
 
-    val svmParameters = new SVM("svm", sc, isMultiClass = true)
+    val colNames = ds.drop(labels).columns
+    val assembler = new VectorAssembler()
+      .setInputCols(colNames)
+      .setOutputCol("features")
 
-    val paramGrid = new ParamGridBuilder().addGrid(svmParameters.regParam, cost).addGrid(svmParameters.icpt, icpt)
-      .addGrid(svmParameters.maxOuterIter, maxIter).addGrid(svmParameters.tol, tol).build() // No parameter search
+    val svm = new SVM("svm", sc, isMultiClass = true)
 
-    val labelConverter = new IndexToString().setInputCol("prediction").setOutputCol("predictedLabel").setLabels(labelIndexer.labels)
+    val paramGrid = new ParamGridBuilder()
+      .addGrid(svm.regParam, cost)
+      .addGrid(svm.icpt, icpt)
+      .addGrid(svm.maxOuterIter, maxIter)
+      .addGrid(svm.tol, tol).build() // No parameter search
+
+    val labelConverter = new IndexToString()
+      .setInputCol("prediction")
+      .setOutputCol("predictedLabel")
+      .setLabels(labelIndexer.labels)
 
     _evaluator = new MulticlassClassificationEvaluator()
-      .setLabelCol("indexedLabel")
+      .setLabelCol("label")
       .setPredictionCol("prediction")
       // "f1", "precision", "recall", "weightedPrecision", "weightedRecall"
       //.setMetricName("scores")
 
-    val pipeline = new Pipeline().setStages(Array(labelIndexer, svmParameters))
+    val pipeline = new Pipeline().setStages(Array(labelIndexer, assembler, svm))//, labelConverter))
 
     val cv = new CrossValidator()
       .setEstimator(pipeline)
@@ -63,16 +74,20 @@ class Classification (sc: SparkContext, sqlContext: SQLContext) extends Serializ
     model
   }
 
-  def decisionTreesTuning (dsX: DataFrame, labels: String = "Region", nFolds: Int = 10, bins: Array[Int] = Array(10,15), impurity: Array[String] = Array("gini"), depth: Array[Int] = Array(30)) : CrossValidatorModel ={
-    val ds = transformDF(dsX, labels)
-
+  def decisionTrees(ds: DataFrame, labels: String = "Region", nFolds: Int = 10, bins: Array[Int] = Array(10, 15, 20), impurity: Array[String] = Array("entropy", "gini"), depth: Array[Int] = Array(4, 6, 8)) : CrossValidatorModel ={
     val labelIndexer = new StringIndexer()
-      .setInputCol("label")
-      .setOutputCol("indexedLabel")
+      .setInputCol(labels)
+      .setOutputCol("label")
       .fit(ds)
+
+    val colNames = ds.drop(labels).columns
+    val assembler = new VectorAssembler()
+      .setInputCols(colNames)
+      .setOutputCol("features")
 
     val dt = new DecisionTreeClassifier()
-      .setLabelCol("indexedLabel")
+      .setLabelCol("label")
+      .setFeaturesCol("features")
 
     val labelConverter = new IndexToString()
       .setInputCol("prediction")
@@ -80,16 +95,16 @@ class Classification (sc: SparkContext, sqlContext: SQLContext) extends Serializ
       .setLabels(labelIndexer.labels)
 
     val pipeline = new Pipeline()
-      .setStages(Array(labelIndexer, dt, labelConverter))
+      .setStages(Array(labelIndexer, assembler, dt, labelConverter))
 
     val paramGrid = new ParamGridBuilder()
       .addGrid(dt.maxBins, bins)
-      .addGrid(dt.impurity, impurity)
       .addGrid(dt.maxDepth, depth)
+      .addGrid(dt.impurity, impurity)
       .build()
 
     _evaluator = new MulticlassClassificationEvaluator()
-      .setLabelCol("indexedLabel")
+      .setLabelCol("label")
       .setPredictionCol("prediction")
 
     val cv = new CrossValidator()
@@ -102,16 +117,20 @@ class Classification (sc: SparkContext, sqlContext: SQLContext) extends Serializ
     model
   }
 
-  def randomForestTuning (dsX: DataFrame, labels: String = "Region", nFolds: Int = 10, bins: Array[Int] = Array(10,15), impurity: Array[String] = Array("gini"), depth: Array[Int] = Array(30)) : CrossValidatorModel ={
-    val ds = transformDF(dsX, labels)
-
+  def randomForest (ds: DataFrame, labels: String = "Region", nFolds: Int = 10, bins: Array[Int] = Array(10, 15, 20), impurity: Array[String] = Array("entropy", "gini"), depth: Array[Int] = Array(4, 6, 8)) : CrossValidatorModel ={
     val labelIndexer = new StringIndexer()
-      .setInputCol("label")
-      .setOutputCol("indexedLabel")
+      .setInputCol(labels)
+      .setOutputCol("label")
       .fit(ds)
 
-    val dt = new RandomForestClassifier()
-      .setLabelCol("indexedLabel")
+    val colNames = ds.drop(labels).columns
+    val assembler = new VectorAssembler()
+      .setInputCols(colNames)
+      .setOutputCol("features")
+
+    val rf = new RandomForestClassifier()
+      .setLabelCol("label")
+      .setFeaturesCol("features")
 
     val labelConverter = new IndexToString()
       .setInputCol("prediction")
@@ -119,16 +138,16 @@ class Classification (sc: SparkContext, sqlContext: SQLContext) extends Serializ
       .setLabels(labelIndexer.labels)
 
     val pipeline = new Pipeline()
-      .setStages(Array(labelIndexer, dt, labelConverter))
+      .setStages(Array(labelIndexer, assembler, rf, labelConverter))
 
     val paramGrid = new ParamGridBuilder()
-      .addGrid(dt.maxBins, bins)
-      .addGrid(dt.impurity, impurity)
-      .addGrid(dt.maxDepth, depth)
+      .addGrid(rf.maxBins, bins)
+      .addGrid(rf.maxDepth, depth)
+      .addGrid(rf.impurity, impurity)
       .build()
 
     _evaluator = new MulticlassClassificationEvaluator()
-      .setLabelCol("indexedLabel")
+      .setLabelCol("label")
       .setPredictionCol("prediction")
 
     val cv = new CrossValidator()
@@ -141,10 +160,9 @@ class Classification (sc: SparkContext, sqlContext: SQLContext) extends Serializ
     model
   }
 
-  def predict(model: CrossValidatorModel, dsX: DataFrame, labels: String = "Region") : Unit = {
-    val ds = transformDF(dsX, labels)
-    _prediction = model.transform(ds).select("label", "features", "prediction")
-    _error = 1 - _evaluator.evaluate(_prediction)
+  def predict(model: CrossValidatorModel, ds: DataFrame, labels: String = "Region") : Unit = {
+    _prediction = model.transform(ds).drop("features")
+    _error = (1 - _evaluator.evaluate(_prediction)) * 100
   }
 
 
