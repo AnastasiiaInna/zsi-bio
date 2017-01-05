@@ -392,7 +392,8 @@ object PopulationStratification{
 
     if (parameters.isClassification == true) {
       println("Classification")
-      var predicted : DataFrame = null
+      var trainingPrediction: DataFrame = null
+      var testPrediction: DataFrame = null
       var trainingError : Double = Double.NaN
       var testError : Double = Double.NaN
       val classification = new Classification(sc, sqlContext)
@@ -403,8 +404,10 @@ object PopulationStratification{
           println ("done")
           classification.predict(svmModel, trainingDS)
           trainingError = classification._error
+          trainingPrediction = classification._prediction
           classification.predict(svmModel, testDS)
           testError = classification._error
+          testPrediction = classification._prediction
         }
 
         case "dt" => {
@@ -415,40 +418,33 @@ object PopulationStratification{
 
           classification.predict(dtModel, trainingDS)
           trainingError = classification._error
+          trainingPrediction = classification._prediction
           classification.predict(dtModel, testDS)
           testError = classification._error
+          testPrediction = classification._prediction
         }
 
         case "rf" => {
           val rfModel = classification.randomForest(trainingDS)
           classification.predict(rfModel, trainingDS)
           trainingError = classification._error
+          trainingPrediction = classification._prediction
           classification.predict(rfModel, testDS)
           testError = classification._error
+          testPrediction = classification._prediction
         }
 
       }
 
-      println($"Tratining error: ", trainingError)
+      testPrediction.repartition(1).writeToCsv(outputFilename)
 
+      println("Training evaluation: ")
+      classification.getMetrics(trainingPrediction)
+      println($"Error = $trainingError")
 
-      predicted = classification._prediction
-
-      predicted.repartition(1).writeToCsv(outputFilename)
-
-      val prediction = predicted.select("prediction").rdd.map(row => row.getAs[Double]("prediction"))
-      val trueLabels = predicted.select("label").rdd.map(row => row.getAs[Double]("label"))
-      val predictionAndLabels = prediction.zip(trueLabels)
-
-      val metrics = new MulticlassMetrics(predictionAndLabels)
-
-      println("Confusion matrix:")
-      println(metrics.confusionMatrix)
-
-      println($"Test error = $testError")
-      println(s"Recall = ${metrics.recall}")
-      println(s"Precision = ${metrics.precision}")
-      println(s"F measure = ${metrics.fMeasure}")
+      println("Test evaluation: ")
+      classification.getMetrics(testPrediction)
+      println($"Error = $testError")
 
     }
 
