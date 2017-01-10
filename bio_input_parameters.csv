@@ -1,7 +1,7 @@
 Parameter,Value
-chr_file,/home/anastasiia/1000genomes/ALL.chrMT.phase3_callmom-v0_4.20130502.genotypes.vcf.adam
-panel_file,/home/anastasiia/1000genomes/ALL.panel
-outputFilename,/home/anastasiia/IdeaProjects/Results/class_chrMT_svm.csv
+chr_file,~/1000genomes/ALL.chrMT.phase3_callmom-v0_4.20130502.genotypes.vcf.adam
+panel_file,~/1000genomes/ALL.panel
+outputFilename,~/Results/class_chrMT_svm.csv
 population,super_pop
 population_set,AFR/EUR/AMR
 missing_rate,0
