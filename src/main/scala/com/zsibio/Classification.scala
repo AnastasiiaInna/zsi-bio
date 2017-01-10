@@ -9,7 +9,7 @@ import org.apache.spark.sql.{DataFrame, SQLContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.mllib.linalg.{Vector, Vectors}
 import org.apache.spark.ml.feature._
-import org.apache.spark.ml.Pipeline
+import org.apache.spark.ml.{Pipeline, PipelineModel}
 import org.apache.spark.ml.tuning.{CrossValidator, CrossValidatorModel, ParamGridBuilder}
 import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
 import org.apache.spark.ml.classification.DecisionTreeClassifier
@@ -25,6 +25,10 @@ class Classification (sc: SparkContext, sqlContext: SQLContext) extends Serializ
   var _trainingError : Double = Double.NaN
   var _testingError : Double = Double.NaN
   var _evaluator : MulticlassClassificationEvaluator = null
+  var model : PipelineModel = null
+  var _precisionByLabel : List[Double] = Nil
+  var _recallByLabel : List[Double] = Nil
+  var _fScoreByLabel : List[Double] = Nil
 
   private def transformDF(ds: DataFrame, labels: String) : DataFrame ={
     val classVar : RDD[String] = ds.select(labels).rdd.map(x => x.mkString) // Vectors.dense(x.toSeq.toArray.map(x => x.asInstanceOf[Double])))
@@ -33,7 +37,7 @@ class Classification (sc: SparkContext, sqlContext: SQLContext) extends Serializ
     transformedDS
   }
 
-  def svm(ds: DataFrame, labels: String = "Region", nFolds: Int = 10,  cost: Array[Double] = Array(0.01, 0.1, 10), icpt: Array[Int] = Array(0), tol : Array[Double] = Array(0.01), maxIter: Array[Int]= Array(10)) : CrossValidatorModel ={
+  def svm(ds: DataFrame, labels: String = "Region", cv: Boolean = true, nFolds: Int = 10,  cost: Array[Double] = Array(0.01, 0.1, 10), icpt: Array[Int] = Array(0), tol : Array[Double] = Array(0.01), maxIter: Array[Int]= Array(10)) : PipelineModel ={
     val labelIndexer = new StringIndexer()
       .setInputCol(labels)
       .setOutputCol("label")
@@ -65,17 +69,20 @@ class Classification (sc: SparkContext, sqlContext: SQLContext) extends Serializ
 
     val pipeline = new Pipeline().setStages(Array(labelIndexer, assembler, svm))//, labelConverter))
 
-    val cv = new CrossValidator()
-      .setEstimator(pipeline)
-      .setEvaluator(_evaluator)
-      .setEstimatorParamMaps(paramGrid)
-      .setNumFolds(nFolds)
+    if (cv == true){
+      val crossValidator = new CrossValidator()
+        .setEstimator(pipeline)
+        .setEvaluator(_evaluator)
+        .setEstimatorParamMaps(paramGrid)
+        .setNumFolds(nFolds)
+      model = crossValidator.fit(ds).bestModel.asInstanceOf[PipelineModel]
+    }
+    else model = pipeline.fit(ds)
 
-    val model = cv.fit(ds)
     model
   }
 
-  def decisionTrees(ds: DataFrame, labels: String = "Region", nFolds: Int = 10, bins: Array[Int] = Array(10, 15, 20), impurity: Array[String] = Array("entropy", "gini"), depth: Array[Int] = Array(4, 6, 8)) : CrossValidatorModel ={
+  def decisionTrees(ds: DataFrame, labels: String = "Region", cv: Boolean = true, nFolds: Int = 10, bins: Array[Int] = Array(10, 15, 20), impurity: Array[String] = Array("entropy", "gini"), depth: Array[Int] = Array(4, 6, 8)) : PipelineModel ={
     val labelIndexer = new StringIndexer()
       .setInputCol(labels)
       .setOutputCol("label")
@@ -108,17 +115,20 @@ class Classification (sc: SparkContext, sqlContext: SQLContext) extends Serializ
       .setLabelCol("label")
       .setPredictionCol("prediction")
 
-    val cv = new CrossValidator()
-      .setEstimator(pipeline)
-      .setEvaluator(_evaluator)
-      .setEstimatorParamMaps(paramGrid)
-      .setNumFolds(nFolds)
+    if (cv == true) {
+      val crossValidator = new CrossValidator()
+        .setEstimator(pipeline)
+        .setEvaluator(_evaluator)
+        .setEstimatorParamMaps(paramGrid)
+        .setNumFolds(nFolds)
+      model = crossValidator.fit(ds).bestModel.asInstanceOf[PipelineModel]
+    }
+    else model = pipeline.fit(ds)
 
-    val model = cv.fit(ds)
     model
   }
 
-  def randomForest (ds: DataFrame, labels: String = "Region", nFolds: Int = 10, bins: Array[Int] = Array(10, 15, 20), impurity: Array[String] = Array("entropy", "gini"), depth: Array[Int] = Array(4, 6, 8)) : CrossValidatorModel ={
+  def randomForest (ds: DataFrame, labels: String = "Region", cv: Boolean = true, nFolds: Int = 10, bins: Array[Int] = Array(10, 15, 20), impurity: Array[String] = Array("entropy", "gini"), depth: Array[Int] = Array(4, 6, 8)) : PipelineModel ={
     val labelIndexer = new StringIndexer()
       .setInputCol(labels)
       .setOutputCol("label")
@@ -151,36 +161,45 @@ class Classification (sc: SparkContext, sqlContext: SQLContext) extends Serializ
       .setLabelCol("label")
       .setPredictionCol("prediction")
 
-    val cv = new CrossValidator()
-      .setEstimator(pipeline)
-      .setEvaluator(_evaluator)
-      .setEstimatorParamMaps(paramGrid)
-      .setNumFolds(nFolds)
+    if (cv == true) {
+      val crossValidator = new CrossValidator()
+        .setEstimator(pipeline)
+        .setEvaluator(_evaluator)
+        .setEstimatorParamMaps(paramGrid)
+        .setNumFolds(nFolds)
+      model = crossValidator.fit(ds).bestModel.asInstanceOf[PipelineModel]
+    }
+    else model = pipeline.fit(ds)
 
-    val model = cv.fit(ds)
     model
   }
 
   def predict(model: CrossValidatorModel, ds: DataFrame, labels: String = "Region") : Unit = {
     _prediction = model.transform(ds).drop("features")
     _error = 1 - _evaluator.evaluate(_prediction)
+    getMetrics(_prediction)
+  }
+
+  def predict(model: PipelineModel, ds: DataFrame) : Unit = {
+    _prediction = model.transform(ds).drop("features")
+    _error = 1 - _evaluator.evaluate(_prediction)
+    getMetrics(_prediction)
   }
 
   def getMetrics(ds: DataFrame) : Unit ={
     val prediction = ds.select("prediction").rdd.map(row => row.getAs[Double]("prediction"))
     val trueLabels = ds.select("label").rdd.map(row => row.getAs[Double]("label"))
     val predictionAndLabels = prediction.zip(trueLabels)
-    val scoreAndLabels = predictionAndLabels.map{case(pred, label) => (Array(pred), Array(label))}
-    
     val metrics = new MulticlassMetrics(predictionAndLabels)
-    val metricsA = new MultilabelMetrics(scoreAndLabels)
 
-    println("Confusion matrix:")
+    _precisionByLabel = metrics.labels.map(label => metrics.precision(label)).toList
+    _recallByLabel = metrics.labels.map(label => metrics.recall(label)).toList
+    _fScoreByLabel = metrics.labels.map(label => metrics.fMeasure(label)).toList
+
+    /*println("Confusion matrix:")
     println(metrics.confusionMatrix)
-    println(s"Precision = ${metricsA.microPrecision}")
-    println(s"Recall = ${metricsA.microRecall}")
-    println(s"F measure = ${metricsA.microF1Measure}")
+    println(s"Precision = ${metrics.precision}")
+    println(s"Recall = ${metrics.recall}")
+    println(s"F measure = ${metrics.fMeasure}")*/
   }
-
-
 }

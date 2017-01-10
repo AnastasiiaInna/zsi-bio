@@ -110,15 +110,14 @@ class Clustering (sc: SparkContext, sqlContext: SQLContext) extends Serializable
     return (correctlyAssignedSum / sampleCnt)
   }
 
-  def randIndex(ds: DataFrame): Double = {
-    val sampleCnt = ds.count()
-    val labelPredictPair = ds.map(row => (row(0), row(1)))
-    val labelPredictCnt = labelPredictPair.map((_, 1L)).reduceByKey(_ + _)
-      // val majorityClassesinCLuster = classesCntInCluster.map{case(_, pairs) => pairs.maxBy(_._2)}
-   // val correctlyAssignedSum = majorityClassesinCLuster.values.sum()
-   // return (correctlyAssignedSum / sampleCnt)
-    0
+/*  private def ri(iter: Iterator[(String, Int)]) : Iterator[Int] ={
+
   }
+  def randIndex(trueLabels: RDD[String], prediction: RDD[Int]): Double = {
+    trueLabels.zip(prediction).mapPartitions(ri)
+
+    0
+  }*/
 }
 
 object Clustering extends Serializable {

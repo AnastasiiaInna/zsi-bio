@@ -26,15 +26,17 @@ case class TSNP(snpIdx: Long, snpId: String, snpPos: Int, snp: Vector[Int]){
   def this(snpIdx: Long, snpId: String, snpPos: Int) = this(snpIdx, snpId, snpPos, null)
 }
 
-case class Parameters(
+case class ClassificationMetrics(error: Double, precisionByLabels: List[Double], recallByLabels: List[Double], fScoreByLabels: List[Double])
+
+class Parameters(
                      chrFile : String,
                      panelFile : String,
                      pop : String,
                      popSet : Array[String],
                      missingRate : Double,
                      isFrequencies : Boolean,
-                     var infFreq : Double,
-                     var supFreq : Double,
+                     infFreq : Double,
+                     supFreq : Double,
                      isLDPruning : Boolean,
                      ldMethod : String,
                      ldTreshold : Double,
@@ -48,12 +50,43 @@ case class Parameters(
                      isClustering : Boolean,
                      isClassification : Boolean,
                      clusterMethod : String,
-                     classificationMethod : String
+                     classificationMethod : String,
+                     cvClassification : Boolean,
+                     cvClustering : Boolean,
+                     nRepeatClassification : Int,
+                     nRepeatClustering : Int
                      ){
   def this() = this("file:///home/anastasiia/1000genomes/ALL.chrMT.phase3_callmom-v0_4.20130502.genotypes.vcf.adam",
     "file:///home/anastasiia/1000genomes/ALL.panel", "super_pop", Array("AFR", "EUR", "AMR", "EAS", "SAS"),
     0., true, 0.005, 1., true, "compsite", 0.2, 500000, Int.MaxValue, false, true, "PCA", "GramSVD", null,
-    true, false, "kmeans", null)
+    true, false, "kmeans", null, true, false, 1, 1)
+
+  val _chrFile = chrFile
+  val _panelFile = panelFile
+  val _pop = pop
+  val _popSet = popSet
+  val _missingRate = missingRate
+  val _isFrequencies : Boolean = isFrequencies
+  var _infFreq : Double = infFreq
+  var _supFreq : Double = supFreq
+  val _isLDPruning : Boolean = isLDPruning
+  val _ldMethod : String = ldMethod
+  val _ldTreshold : Double = ldTreshold
+  val _ldMaxBp : Int = ldMaxBp
+  val _ldMaxN : Int = ldMaxN
+  val _isOutliers : Boolean = isOutliers
+  val _isDimRed : Boolean = isDimRed
+  val _dimRedMethod : String =dimRedMethod
+  val _pcaMethod : String = pcaMethod
+  val _mdsMethod : String = mdsMethod
+  val _isClustering : Boolean = isClustering
+  val _isClassification : Boolean = isClassification
+  val _clusterMethod : String = clusterMethod
+  val _classificationMethod : String = classificationMethod
+  val _cvClassification : Boolean = cvClassification
+  val _cvClustering : Boolean = cvClustering
+  val _nRepeatClassification : Int = nRepeatClassification
+  val _nRepeatClustering : Int = nRepeatClustering
 }
 
 object PopulationStratification{
@@ -86,6 +119,20 @@ object PopulationStratification{
     }
   }
 
+  def computeAvgMetrics (classificationMetrics: List[ClassificationMetrics], isPrint: Boolean = true) : Unit ={
+    val avgError = classificationMetrics.map(metrics => metrics.error).sum / classificationMetrics.size
+    val avgPrecisionByLabel = classificationMetrics.map(metrics => metrics.precisionByLabels).transpose.map(precisions => precisions.sum / precisions.size)
+    val avgRecallByLabel = classificationMetrics.map(metrics => metrics.recallByLabels).transpose.map(recalls => recalls.sum / recalls.size)
+    val avgFScoreByLabel = classificationMetrics.map(metrics => metrics.fScoreByLabels).transpose.map(fScores => fScores.sum / fScores.size)
+
+    if(isPrint){
+      println(s"Average error: $avgError")
+      println(s"Average precision for each label:"); avgPrecisionByLabel.foreach{precision => print(s" $precision")}
+      println(s"\nAverage recall for each label:"); avgRecallByLabel.foreach(recall => print(s" $recall"))
+      println(s"\nAverage F-Measure for each label:"); avgFScoreByLabel.foreach(f => print(s" $f"))
+    }
+  }
+
   def main(args: Array[String]): Unit = {
 
     val conf = new SparkConf().setAppName("PopStrat").setMaster("local").set("spark.ext.h2o.repl.enabled", "false").set("spark.driver.maxResultSize", "0")
@@ -93,6 +140,8 @@ object PopulationStratification{
     val sqlContext = new SQLContext(sc)
     import sqlContext.implicits._
 
+    val time = new Time()
+    val (t0, t1) : (Long, Long) = (0, 0)
     var ds : DataFrame = null
     var trainingDS : DataFrame = null
     var testDS : DataFrame = null
@@ -148,12 +197,14 @@ object PopulationStratification{
         paramsMap.get("dim_reduction").getOrElse(null).toBoolean, paramsMap.get("dim_red_method").getOrElse(null),
         paramsMap.get("pca_method").getOrElse(null), paramsMap.get("mds_method").getOrElse(null),
         paramsMap.get("clustering").getOrElse(null).toBoolean, paramsMap.get("classification").getOrElse(null).toBoolean,
-        paramsMap.get("clustering_method").getOrElse(null), paramsMap.get("classification_method").getOrElse(null)
+        paramsMap.get("clustering_method").getOrElse(null), paramsMap.get("classification_method").getOrElse(null),
+        paramsMap.get("cv_classification").getOrElse(null).toBoolean, paramsMap.get("cv_clustering").getOrElse(null).toBoolean,
+        paramsMap.get("n_reapeat_classification").getOrElse(null).toInt, paramsMap.get("n_reapeat_clustering").getOrElse(null).toInt
       )
 
-      if (parameters.isFrequencies == false) {
-        parameters.infFreq = 0.
-        parameters.supFreq = 1.
+      if (parameters._isFrequencies == false) {
+        parameters._infFreq = 0.
+        parameters._supFreq = 1.
       }
     }
 
@@ -175,16 +226,17 @@ object PopulationStratification{
       ).toMap.filter(tuple => filter(tuple._1, tuple._2))
     }
 
-    val panel : Map[String, String] = extract(parameters.panelFile, parameters.pop, (sampleID: String, pop: String) => parameters.popSet.contains(pop))
+    val panel : Map[String, String] = extract(parameters._panelFile, parameters._pop, (sampleID: String, pop: String) => parameters._popSet.contains(pop))
     val bpanel = sc.broadcast(panel)
-    val allGenotypes: RDD[Genotype] = sc.loadGenotypes(parameters.chrFile)
+    val allGenotypes: RDD[Genotype] = sc.loadGenotypes(parameters._chrFile)
     val genotypes: RDD[Genotype] = allGenotypes.filter(genotype => {
       bpanel.value.contains(genotype.getSampleId)
     })
 
-    val gts = new Population(sc, sqlContext, genotypes, panel, parameters.missingRate, parameters.infFreq, parameters.supFreq)
+
+    val gts = new Population(sc, sqlContext, genotypes, panel, parameters._missingRate, parameters._infFreq, parameters._supFreq)
     val variantsRDD: RDD[(String, Array[SampleVariant])] = gts.sortedVariantsBySampelId
-    println(s"Number of SNPs is ${variantsRDD.first()._2.length}")
+    // println(s"Number of SNPs is ${variantsRDD.first()._2.length}")
 
       /**
         * Variables for prunning data. Used for both ldPruning and Outliers detection cases
@@ -200,7 +252,7 @@ object PopulationStratification{
         *  LDPruning
         */
 
-    if (parameters.isLDPruning == true) {
+    if (parameters._isLDPruning == true) {
       println("LD Pruning")
       val ldSize = 256
       val seq = sc.parallelize(0 until ldSize * ldSize)
@@ -229,7 +281,7 @@ object PopulationStratification{
       // val listGeno = snpIdSet.zip(snpSet).map{case((snpId, snpPos), snp) => toTSNP(snpId, snpPos, snp.toVector)}
       // println(listGeno.collect().toList)
 
-      prunnedSnpIdSet = ldPrun.performLDPruning(listGeno, parameters.ldMethod, parameters.ldTreshold, parameters.ldMaxBp, parameters.ldMaxN)
+      prunnedSnpIdSet = ldPrun.performLDPruning(listGeno, parameters._ldMethod, parameters._ldTreshold, parameters._ldMaxBp, parameters._ldMaxN)
       println(prunnedSnpIdSet)
       variantsRDDprunned = prun(variantsRDDprunned, prunnedSnpIdSet)
     }
@@ -238,7 +290,7 @@ object PopulationStratification{
         * Outliers detection
         */
 
-    if (parameters.isOutliers == true) {
+    if (parameters._isOutliers == true) {
       println("Outliers Detections")
       val samplesForOutliers: RDD[Seq[Int]] = variantsRDDprunned.map {case (_, sortedVariants) => sortedVariants.map(_.alternateCount.toInt) }
       val n: Int = samplesForOutliers.count().toInt
@@ -284,10 +336,10 @@ object PopulationStratification{
         */
 
     val unsupervised = new Unsupervised(sc, sqlContext)
-    if (parameters.isDimRed == true) {
+    if (parameters._isDimRed == true) {
       println("Dimensionality Reduction")
 
-      parameters.dimRedMethod match {
+      parameters._dimRedMethod match {
 
         /**
           * PCA
@@ -328,137 +380,142 @@ object PopulationStratification{
 
     val seeds = 1234
     var split = ds.randomSplit(Array(0.7, 0.3), seeds)
-    trainingDS = split(0)
+    trainingDS = ds //split(0)
     testDS = split(1)
 
       /**
         * Clustering
         */
 
-    if (parameters.isClustering == true) {
+    if (parameters._isClustering == true) {
       println("Clustering")
       var trainPrediction: DataFrame = null
       var testPrediction: DataFrame = null
       val clustering = new Clustering(sc, sqlContext)
       val setK : Seq[Int] = Seq(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+      var k = parameters._popSet.length
 
-      parameters.clusterMethod match {
+      parameters._clusterMethod match {
         case "kmeans" => {
-          val kTuning = unsupervised.kMeansTuning(trainingDS, responseColumn = "Region", ignoredColumns = Array("SampleId"), kSet = setK, nReapeat = 5)
-          println("K estimation: ")
-          kTuning.foreach{case(k, purity) => println(s"k = ${k}, purity = ${purity}")}
-          val K = kTuning.maxBy(_._2)._1
-          val kMeansModel = unsupervised.kMeansH2O(trainingDS, K)
-          trainPrediction = unsupervised.kMeansPredict(kMeansModel, trainingDS)
-          testPrediction = unsupervised.kMeansPredict(kMeansModel, testDS)
-          testPrediction.select("Region", "Predict").show(20)
+          if (parameters._cvClustering == true){
+            val kTuning = unsupervised.kMeansTuning(trainingDS, responseColumn = "Region", ignoredColumns = Array("SampleId"), kSet = setK, nReapeat = 5)
+            println("K estimation: ")
+            kTuning.foreach{case(k, purity) => println(s"k = ${k}, purity = ${purity}")}
+            k = kTuning.maxBy(_._2)._1
+          }
+          val kMeansModel = unsupervised.kMeansH2O(ds, k)
+          trainPrediction = unsupervised.kMeansPredict(kMeansModel, ds)
+          // testPrediction = unsupervised.kMeansPredict(kMeansModel, testDS)
         }
 
         case "gmm" => {
-          val kTuning = clustering.gmmKTuning(trainingDS, Array("SampleId", "Region"), setK, nReapeat = 5)
-          println("K estimation: ")
-          kTuning.foreach{case(k, purity) => println(s"k = ${k}, purity = ${purity}")}
-          val K = kTuning.maxBy(_._2)._1
-          val gmmModel = clustering.gmm(trainingDS, Array("SampleId", "Region"), K)
-          trainPrediction = clustering.predict(gmmModel, trainingDS, Array("SampleId", "Region"))
-          testPrediction = clustering.predict(gmmModel, testDS, Array("SampleId", "Region"))
+          if (parameters._cvClustering == true) {
+            val kTuning = clustering.gmmKTuning(trainingDS, Array("SampleId", "Region"), setK, nReapeat = 5)
+            println("K estimation: ")
+            kTuning.foreach { case (k, purity) => println(s"k = ${k}, purity = ${purity}") }
+            k = kTuning.maxBy(_._2)._1
+          }
+          val gmmModel = clustering.gmm(ds, Array("SampleId", "Region"), k)
+          trainPrediction = clustering.predict(gmmModel, ds, Array("SampleId", "Region"))
+          // testPrediction = clustering.predict(gmmModel, testDS, Array("SampleId", "Region"))
         }
 
         case "bkm" => {
-          val kTuning = clustering.bkmKTuning(trainingDS, Array("SampleId", "Region"), setK, nReapeat = 5)
-          println("K estimation: ")
-          kTuning.foreach{case(k, purity) => println(s"k = ${k}, purity = ${purity}")}
-          val K = kTuning.maxBy(_._2)._1
-          val bkmModel = clustering.bkm(trainingDS, Array("SampleId", "Region"), K)
-          trainPrediction = clustering.predict(bkmModel, trainingDS, Array("SampleId", "Region"))
-          testPrediction = clustering.predict(bkmModel, testDS, Array("SampleId", "Region"))
+          if (parameters._cvClustering == true) {
+            val kTuning = clustering.bkmKTuning(trainingDS, Array("SampleId", "Region"), setK, nReapeat = 5)
+            println("K estimation: ")
+            kTuning.foreach { case (k, purity) => println(s"k = ${k}, purity = ${purity}") }
+            k = kTuning.maxBy(_._2)._1
+          }
+          val bkmModel = clustering.bkm(ds, Array("SampleId", "Region"), k)
+          trainPrediction = clustering.predict(bkmModel, ds, Array("SampleId", "Region"))
+          // testPrediction = clustering.predict(bkmModel, testDS, Array("SampleId", "Region"))
         }
       }
 
       var purity = clustering.purity(trainPrediction.select("Region", "Predict"))
-      println($"Tratining purity: ", purity)
-      purity = clustering.purity(testPrediction.select("Region", "Predict"))
-      println($"Test purity: ", purity)
+      println($"Purity: ", purity)
+/*      purity = clustering.purity(testPrediction.select("Region", "Predict"))
+      println($"Test purity: ", purity)*/
 
-      testPrediction.repartition(1).writeToCsv(outputFilename)
+      trainPrediction.repartition(1).writeToCsv(outputFilename)
     }
 
     /**
       * Classification
       */
 
-/*    val popFactorClass  = sc.parallelize(parameters.popSet).zipWithIndex.toDF("Region", "Class")
-    val dsClass = ds.join(popFactorClass, "Region").drop("SampleId").drop("Region")*/
-
     split = ds.drop("SampleId").randomSplit(Array(0.7, 0.3), seeds)
     trainingDS = split(0)
     testDS  = split(1)
 
-    if (parameters.isClassification == true) {
+    if (parameters._isClassification == true) {
       println("Classification")
+      val splitList = (0 until parameters._nRepeatClassification).map(_ => ds.drop("SampleId").randomSplit(Array(0.7, 0.3), seeds))
+      val trainDfList = splitList.map(s => s(0))
+      val testDfList = splitList.map(s => s(1))
+
       var trainingPrediction: DataFrame = null
       var testPrediction: DataFrame = null
-      var trainingError : Double = Double.NaN
-      var testError : Double = Double.NaN
+      var trainingAvgError : Double = Double.NaN
+      var testAvgError : Double = Double.NaN
       val classification = new Classification(sc, sqlContext)
+      var pipelineModelsList : List[PipelineModel] = Nil
 
-      parameters.classificationMethod match {
+      parameters._classificationMethod match {
         case "svm" => {
-          val svmModel = classification.svm(trainingDS)
-          val bestModel = svmModel.bestModel.asInstanceOf[PipelineModel]
-          val dtStage = bestModel.stages(2).asInstanceOf[SVMModel]
-          println(s"The best  learned classification SVM model: ${dtStage.mloutput}")
+          pipelineModelsList = trainDfList.map {trainingDf  =>
+            val svmModel = classification.svm(trainingDf, cv = parameters._cvClassification)
+            svmModel
+          }.toList
 
-          classification.predict(svmModel, trainingDS)
-          trainingError = classification._error
-          trainingPrediction = classification._prediction
-          classification.predict(svmModel, testDS)
-          testError = classification._error
-          testPrediction = classification._prediction
+//          val dtStage = svmModel.stages(2).asInstanceOf[SVMModel]
+//          println(s"The best  learned classification SVM model: ${dtStage.mloutput}")
         }
 
         case "dt" => {
-          val dtModel = classification.decisionTrees(trainingDS)//, "Region", 10, Array(1.0))
-          val bestModel = dtModel.bestModel.asInstanceOf[PipelineModel]
-          val dtStage = bestModel.stages(2).asInstanceOf[DecisionTreeClassificationModel]
-          println(s"The best  learned classification tree model: ${dtStage.toDebugString}")
-
-          classification.predict(dtModel, trainingDS)
-          trainingError = classification._error
-          trainingPrediction = classification._prediction
-          classification.predict(dtModel, testDS)
-          testError = classification._error
-          testPrediction = classification._prediction
+          pipelineModelsList = trainDfList.map {trainingDf  =>
+            val dtModel = classification.decisionTrees(trainingDS,  cv = parameters._cvClassification)//, "Region", 10, Array(1.0))
+            val dtStage = dtModel.stages(2).asInstanceOf[DecisionTreeClassificationModel]
+            println(s"The best  learned classification tree model: ${dtStage.toDebugString}")
+            dtModel
+          }.toList
         }
 
         case "rf" => {
-          val rfModel = classification.randomForest(trainingDS)
-
-          val bestModel = rfModel.bestModel.asInstanceOf[PipelineModel]
-          val dtStage = bestModel.stages(2).asInstanceOf[RandomForestClassificationModel]
-          println(s"The best  learned classification random forest model: ${dtStage.toDebugString}")
-
-
-          classification.predict(rfModel, trainingDS)
-          trainingError = classification._error
-          trainingPrediction = classification._prediction
-          classification.predict(rfModel, testDS)
-          testError = classification._error
-          testPrediction = classification._prediction
+          pipelineModelsList = trainDfList.map { trainingDf =>
+            val rfModel = classification.randomForest(trainingDS, cv = parameters._cvClassification)
+            val dtStage = rfModel.stages(2).asInstanceOf[RandomForestClassificationModel]
+            println(s"The best  learned classification random forest model: ${dtStage.toDebugString}")
+            rfModel
+          }.toList
         }
-
       }
 
-      testPrediction.repartition(1).writeToCsv(outputFilename)
+      /**
+        * Training prediction
+        */
+      var classificationMetrics = pipelineModelsList.zip(trainDfList).map { case (model, trainingDf) =>
+        classification.predict(model, trainingDf)
+        new ClassificationMetrics(classification._error, classification._precisionByLabel, classification._recallByLabel, classification._fScoreByLabel)
+      }
 
+      println(s"Classification algorithm was repeated ${parameters._nRepeatClassification} times")
       println("\nTraining evaluation: ")
-      classification.getMetrics(trainingPrediction)
-      println($"Error = $trainingError")
+      computeAvgMetrics(classificationMetrics)
 
+      /**
+        * Test prediction
+        */
+      classificationMetrics = pipelineModelsList.zip(testDfList).map { case (model, testDf) =>
+        classification.predict(model, testDf)
+        new ClassificationMetrics(classification._error, classification._precisionByLabel, classification._recallByLabel, classification._fScoreByLabel)
+      }
       println("\nTest evaluation: ")
-      classification.getMetrics(testPrediction)
-      println($"Error = $testError")
+      computeAvgMetrics(classificationMetrics)
 
+      testPrediction = classification._prediction
+      testPrediction.repartition(1).writeToCsv(outputFilename)
     }
 
 

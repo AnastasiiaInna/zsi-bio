@@ -19,6 +19,7 @@ trait PopulationMethods{
 class Population[T] (sc: SparkContext, sqlContext: SQLContext, genotypes: RDD[Genotype], panel: Map[String, String],
                      val missingRate: Double = 0.0, var infFreq: Double = 0.05, var supFreq: Double = 1.0) extends Serializable with PopulationMethods{
 
+  val time = new Time()
   private var _infFreq     : Double = infFreq
   private var _supFreq     : Double = supFreq
   private val _missingRate : Double = missingRate
