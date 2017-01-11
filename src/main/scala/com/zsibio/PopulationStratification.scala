@@ -141,7 +141,7 @@ object PopulationStratification{
     import sqlContext.implicits._
 
     val time = new Time()
-    val (t0, t1) : (Long, Long) = (0, 0)
+    var (t0, t1) : (Long, Long) = (0, 0)
     var ds : DataFrame = null
     var trainingDS : DataFrame = null
     var testDS : DataFrame = null
@@ -226,6 +226,8 @@ object PopulationStratification{
       ).toMap.filter(tuple => filter(tuple._1, tuple._2))
     }
 
+    t0 = System.currentTimeMillis()
+
     val panel : Map[String, String] = extract(parameters._panelFile, parameters._pop, (sampleID: String, pop: String) => parameters._popSet.contains(pop))
     val bpanel = sc.broadcast(panel)
     val allGenotypes: RDD[Genotype] = sc.loadGenotypes(parameters._chrFile)
@@ -236,8 +238,10 @@ object PopulationStratification{
 
     val gts = new Population(sc, sqlContext, genotypes, panel, parameters._missingRate, parameters._infFreq, parameters._supFreq)
     val variantsRDD: RDD[(String, Array[SampleVariant])] = gts.sortedVariantsBySampelId
-    // println(s"Number of SNPs is ${variantsRDD.first()._2.length}")
+    println(s"Number of SNPs is ${variantsRDD.first()._2.length}")
 
+    t1 = System.currentTimeMillis()
+    println(s"Feature selection. Frequencies: ${time.formatTimeDiff(t0, t1)}")
       /**
         * Variables for prunning data. Used for both ldPruning and Outliers detection cases
         */
@@ -254,6 +258,8 @@ object PopulationStratification{
 
     if (parameters._isLDPruning == true) {
       println("LD Pruning")
+      t0 = System.currentTimeMillis()
+
       val ldSize = 256
       val seq = sc.parallelize(0 until ldSize * ldSize)
       val ldPrun = new LDPruning(sc, sqlContext, seq)
@@ -284,6 +290,9 @@ object PopulationStratification{
       prunnedSnpIdSet = ldPrun.performLDPruning(listGeno, parameters._ldMethod, parameters._ldTreshold, parameters._ldMaxBp, parameters._ldMaxN)
       println(prunnedSnpIdSet)
       variantsRDDprunned = prun(variantsRDDprunned, prunnedSnpIdSet)
+
+      t1 = System.currentTimeMillis()
+      println(s"Feature selection. LD Pruning: ${time.formatTimeDiff(t0, t1)}")
     }
 
       /**
@@ -338,6 +347,7 @@ object PopulationStratification{
     val unsupervised = new Unsupervised(sc, sqlContext)
     if (parameters._isDimRed == true) {
       println("Dimensionality Reduction")
+      t0 = System.currentTimeMillis()
 
       parameters._dimRedMethod match {
 
@@ -373,6 +383,8 @@ object PopulationStratification{
           ds.show(50)
         }
       }
+      t1 = System.currentTimeMillis()
+      println(s"Dimensionality reduction. ${parameters._clusterMethod}: ${time.formatTimeDiff(t0, t1)}")
     }
 
     if (ds == null)
@@ -394,6 +406,8 @@ object PopulationStratification{
       val clustering = new Clustering(sc, sqlContext)
       val setK : Seq[Int] = Seq(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
       var k = parameters._popSet.length
+
+      t0 = System.currentTimeMillis()
 
       parameters._clusterMethod match {
         case "kmeans" => {
@@ -439,6 +453,9 @@ object PopulationStratification{
       println($"Test purity: ", purity)*/
 
       trainPrediction.repartition(1).writeToCsv(outputFilename)
+
+      t1 = System.currentTimeMillis()
+      println(s"Clustering. ${parameters._clusterMethod} : ${time.formatTimeDiff(t0, t1)}")
     }
 
     /**
@@ -461,6 +478,8 @@ object PopulationStratification{
       var testAvgError : Double = Double.NaN
       val classification = new Classification(sc, sqlContext)
       var pipelineModelsList : List[PipelineModel] = Nil
+
+      t0 = System.currentTimeMillis()
 
       parameters._classificationMethod match {
         case "svm" => {
@@ -513,6 +532,9 @@ object PopulationStratification{
       }
       println("\nTest evaluation: ")
       computeAvgMetrics(classificationMetrics)
+
+      t1 = System.currentTimeMillis()
+      println(s"Classification. ${parameters._classificationMethod} : ${time.formatTimeDiff(t0, t1)}")
 
       testPrediction = classification._prediction
       testPrediction.repartition(1).writeToCsv(outputFilename)
