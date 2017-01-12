@@ -51,7 +51,7 @@ resolvers ++= Seq(
 
 parallelExecution in Test := false
 
-mainClass in assembly := Some("com.zsibio.PopulationStratification")
+//mainClass in assembly := Some("com.zsibio.PopulationStratification")
 
 /*assemblyMergeStrategy in assembly := {
   case PathList("org", "apache", "hadoop", "yarn", xs@_*) => MergeStrategy.first
