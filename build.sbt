@@ -49,22 +49,12 @@ libraryDependencies ++= Seq(
   "OSS Sonatype" at "https://repo1.maven.org/maven2/"
 )*/
 
-// parallelExecution in Test := false
+parallelExecution in Test := false
 fork := true
 
 mainClass in assembly := Some("com.zsibio.PopulationStratification")
 assemblyJarName in assembly := "zsi-bio-popStrat.jar"
 
-
-
-mergeStrategy in assembly <<= (mergeStrategy in assembly) { (old) =>
-{
-  case PathList("META-INF", xs @ _*) => MergeStrategy.discard
-  case x => MergeStrategy.first
-}
-}
-
-/*
 assemblyMergeStrategy in assembly := {
   case PathList("org", "apache", "hadoop", "yarn", xs@_*) => MergeStrategy.first
   case PathList("org", "apache", "commons", xs@_*) => MergeStrategy.first
@@ -72,7 +62,7 @@ assemblyMergeStrategy in assembly := {
   case ("log4j.properties") => MergeStrategy.concat
   case x => (assemblyMergeStrategy in assembly).value(x)
 }
-*/
+
 
 /*lazy val copyDocAssetsTask = taskKey[Unit]("Copy doc assets")
 
