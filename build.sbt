@@ -44,10 +44,10 @@ libraryDependencies ++= Seq(
 
 )
 
-resolvers ++= Seq(
+/*resolvers ++= Seq(
   "Job Server Bintray" at "https://dl.bintray.com/spark-jobserver/maven",
   "OSS Sonatype" at "https://repo1.maven.org/maven2/"
-)
+)*/
 
 // parallelExecution in Test := false
 fork := true
@@ -55,6 +55,14 @@ fork := true
 mainClass in assembly := Some("com.zsibio.PopulationStratification")
 assemblyJarName in assembly := "zsi-bio-popStrat.jar"
 
+
+
+mergeStrategy in assembly <<= (mergeStrategy in assembly) { (old) =>
+{
+  case PathList("META-INF", xs @ _*) => MergeStrategy.discard
+  case x => MergeStrategy.first
+}
+}
 
 /*
 assemblyMergeStrategy in assembly := {
