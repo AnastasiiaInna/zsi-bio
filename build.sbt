@@ -50,6 +50,7 @@ resolvers ++= Seq(
 )
 
 parallelExecution in Test := false
+fork := true
 
 mainClass in assembly := Some("com.zsibio.PopulationStratification")
 
@@ -61,7 +62,7 @@ assemblyMergeStrategy in assembly := {
   case x => (assemblyMergeStrategy in assembly).value(x)
 }
 
-lazy val copyDocAssetsTask = taskKey[Unit]("Copy doc assets")
+/*lazy val copyDocAssetsTask = taskKey[Unit]("Copy doc assets")
 
 copyDocAssetsTask := {
   val sourceDir = file("resources/doc-resources")
@@ -69,7 +70,7 @@ copyDocAssetsTask := {
   IO.copyDirectory(sourceDir, targetDir)
 }
 
-copyDocAssetsTask <<= copyDocAssetsTask triggeredBy (doc in Compile)
+copyDocAssetsTask <<= copyDocAssetsTask triggeredBy (doc in Compile)*/
 
 // net.virtualvoid.sbt.graph.Plugin.graphSettings
 
