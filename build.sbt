@@ -53,7 +53,7 @@ parallelExecution in Test := false
 
 mainClass in assembly := Some("com.zsibio.PopulationStratification")
 
-/*assemblyMergeStrategy in assembly := {
+assemblyMergeStrategy in assembly := {
   case PathList("org", "apache", "hadoop", "yarn", xs@_*) => MergeStrategy.first
   case PathList("org", "apache", "commons", xs@_*) => MergeStrategy.first
   case ("git.properties") => MergeStrategy.concat
@@ -69,7 +69,7 @@ copyDocAssetsTask := {
   IO.copyDirectory(sourceDir, targetDir)
 }
 
-copyDocAssetsTask <<= copyDocAssetsTask triggeredBy (doc in Compile)*/
+copyDocAssetsTask <<= copyDocAssetsTask triggeredBy (doc in Compile)
 
 // net.virtualvoid.sbt.graph.Plugin.graphSettings
 
