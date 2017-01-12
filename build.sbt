@@ -49,7 +49,7 @@ resolvers ++= Seq(
   "OSS Sonatype" at "https://repo1.maven.org/maven2/"
 )
 
-parallelExecution in Test := false
+// parallelExecution in Test := false
 fork := true
 
 mainClass in assembly := Some("com.zsibio.PopulationStratification")
