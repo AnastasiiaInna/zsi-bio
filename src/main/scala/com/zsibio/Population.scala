@@ -16,7 +16,7 @@ trait PopulationMethods{
 }
 
 @SerialVersionUID(15L)
-class Population[T] (sc: SparkContext, sqlContext: SQLContext, genotypes: RDD[Genotype], panel: Map[String, String],
+class Population[T] (sc: SparkContext, sqlContext: SQLContext, genotypes: RDD[Genotype], panel: scala.collection.Map[String, String],
                      val missingRate: Double = 0.0, var infFreq: Double = 0.05, var supFreq: Double = 1.0) extends Serializable with PopulationMethods{
 
   val time = new Time()

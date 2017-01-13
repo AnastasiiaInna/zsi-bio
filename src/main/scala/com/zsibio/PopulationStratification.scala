@@ -59,7 +59,7 @@ class Parameters(
   def this() = this("file:///home/anastasiia/1000genomes/ALL.chrMT.phase3_callmom-v0_4.20130502.genotypes.vcf.adam",
     "file:///home/anastasiia/1000genomes/ALL.panel", "super_pop", Array("AFR", "EUR", "AMR", "EAS", "SAS"),
     0., true, 0.005, 1., true, "compsite", 0.2, 500000, Int.MaxValue, false, true, "PCA", "GramSVD", null,
-    true, false, "kmeans", null, true, false, 1, 1)
+    true, false, "svm", null, true, false, 1, 1)
 
   val _chrFile = chrFile
   val _panelFile = panelFile
@@ -149,6 +149,7 @@ object PopulationStratification{
     var parametersFile : String = null
     var parameters : Parameters = null
     var outputFilename : String = null
+    var timeResult : List[String] = Nil
 
     if (args.length == 0) {
       parameters = new Parameters()
@@ -214,8 +215,8 @@ object PopulationStratification{
         val sampledGts = gtsForSample.filter(g => (g.getVariant.getStart >= start && g.getVariant.getEnd <= end) )
         sampledGts.adamParquetSave("/home/anastasiia/1000genomes/chr22-sample_3000.adam")*/
 
-    def extract(file: String, superPop: String = "super_pop", filter: (String, String) => Boolean): Map[String, String] = {
-      Source.fromFile(file).getLines().map(line => {
+    def extract(file: String, superPop: String = "super_pop", filter: (String, String) => Boolean) = {
+      sc.textFile(file).map(line => {
         val tokens = line.split("\t").toList
         if (superPop == "pop") {
           tokens(0) -> tokens(1)
@@ -223,12 +224,12 @@ object PopulationStratification{
           tokens(0) -> tokens(2)
         }
       }
-      ).toMap.filter(tuple => filter(tuple._1, tuple._2))
+      ).collectAsMap.filter(tuple => filter(tuple._1, tuple._2))
     }
 
     t0 = System.currentTimeMillis()
 
-    val panel : Map[String, String] = extract(parameters._panelFile, parameters._pop, (sampleID: String, pop: String) => parameters._popSet.contains(pop))
+    val panel = extract(parameters._panelFile, parameters._pop, (sampleID: String, pop: String) => parameters._popSet.contains(pop))
     val bpanel = sc.broadcast(panel)
     val allGenotypes: RDD[Genotype] = sc.loadGenotypes(parameters._chrFile)
     val genotypes: RDD[Genotype] = allGenotypes.filter(genotype => {
@@ -241,7 +242,10 @@ object PopulationStratification{
     println(s"Number of SNPs is ${variantsRDD.first()._2.length}")
 
     t1 = System.currentTimeMillis()
-    println(s"Feature selection. Frequencies: ${time.formatTimeDiff(t0, t1)}")
+    val fsFreqTime = time.formatTimeDiff(t0, t1)
+    println(s"Feature selection. Frequencies: $fsFreqTime")
+    timeResult ::= (s"Feature selection. Frequencies: $fsFreqTime")
+
       /**
         * Variables for prunning data. Used for both ldPruning and Outliers detection cases
         */
@@ -292,7 +296,9 @@ object PopulationStratification{
       variantsRDDprunned = prun(variantsRDDprunned, prunnedSnpIdSet)
 
       t1 = System.currentTimeMillis()
-      println(s"Feature selection. LD Pruning: ${time.formatTimeDiff(t0, t1)}")
+      val fsLdTime = time.formatTimeDiff(t0, t1)
+      println(s"Feature selection. LD Pruning: $fsLdTime")
+      timeResult ::= (s"Feature selection. LD Pruning: $fsLdTime")
     }
 
       /**
@@ -384,7 +390,9 @@ object PopulationStratification{
         }
       }
       t1 = System.currentTimeMillis()
-      println(s"Dimensionality reduction. ${parameters._clusterMethod}: ${time.formatTimeDiff(t0, t1)}")
+      val dimRedTime = time.formatTimeDiff(t0, t1)
+      println(s"Dimensionality reduction. ${parameters._dimRedMethod}: $dimRedTime")
+      timeResult ::= (s"Dimensionality reduction. ${parameters._dimRedMethod}: $dimRedTime")
     }
 
     if (ds == null)
@@ -455,7 +463,9 @@ object PopulationStratification{
       trainPrediction.repartition(1).writeToCsv(outputFilename)
 
       t1 = System.currentTimeMillis()
-      println(s"Clustering. ${parameters._clusterMethod} : ${time.formatTimeDiff(t0, t1)}")
+      val clusterTime = time.formatTimeDiff(t0, t1)
+      println(s"Clustering. ${parameters._clusterMethod} : $clusterTime")
+      timeResult ::= (s"Clustering. ${parameters._clusterMethod} : $clusterTime")
     }
 
     /**
@@ -522,6 +532,7 @@ object PopulationStratification{
       println(s"Classification algorithm was repeated ${parameters._nRepeatClassification} times")
       println("\nTraining evaluation: ")
       computeAvgMetrics(classificationMetrics)
+      println()
 
       /**
         * Test prediction
@@ -534,12 +545,15 @@ object PopulationStratification{
       computeAvgMetrics(classificationMetrics)
 
       t1 = System.currentTimeMillis()
-      println(s"Classification. ${parameters._classificationMethod} : ${time.formatTimeDiff(t0, t1)}")
+      val classTime = time.formatTimeDiff(t0, t1)
+      println(s"\nClassification. ${parameters._classificationMethod} : $classTime")
+      timeResult ::= (s"Classification. ${parameters._classificationMethod} : $classTime")
 
       testPrediction = classification._prediction
       testPrediction.repartition(1).writeToCsv(outputFilename)
     }
 
+    timeResult.foreach(println)
 
 
 
