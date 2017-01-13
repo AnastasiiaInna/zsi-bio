@@ -1,7 +1,7 @@
 Parameter,Value
-chr_file,/mnt/zgmvol/_forge/zsibio/Anastasiia/chr22-sample.adam
-panel_file,/mnt/zgmvol/_forge/zsibio/Anastasiia/ALL.panel
-outputFilename,/mnt/zgmvol/_forge/zsibio/Anastasiia/class_chrMT_svm.csv
+chr_file,hdfs:///popgen/chr22-sample.adam
+panel_file,hdfs:///popgen/ALL.panel
+outputFilename,hdfs:///popgen/class_chrMT_svm.csv
 population,super_pop
 population_set,AFR/EUR/AMR/SAS/EAS
 missing_rate,0
