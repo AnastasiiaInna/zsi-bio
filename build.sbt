@@ -6,7 +6,7 @@ version := "1.0"
 
 scalaVersion := "2.10.4"
 
-val DEFAULT_SPARK_VERSION = "1.6.2"
+val DEFAULT_SPARK_VERSION = "1.6.3"
 val DEFAULT_HADOOP_VERSION = "2.7.1"
 
 lazy val sparkVersion = Properties.envOrElse("SPARK_VERSION", DEFAULT_SPARK_VERSION)
@@ -26,7 +26,6 @@ libraryDependencies ++= Seq(
     exclude("org.apache.hadoop", "hadoop-client"),
   "org.seqdoop" % "hadoop-bam" % "7.2.1"
     exclude("org.apache.hadoop", "hadoop-client"),
-  "spark.jobserver" % "job-server-api_2.10" % "0.5.2",
   "ai.h2o" % "sparkling-water-core_2.10" % sparkVersion,
   "ai.h2o" % "h2o-algos" % "3.8.2.11",
   "org.apache.systemml" % "systemml" % "0.11.0-incubating"
@@ -56,11 +55,62 @@ mainClass in assembly := Some("com.zsibio.PopulationStratification")
 assemblyJarName in assembly := "zsi-bio-popStrat.jar"
 
 assemblyMergeStrategy in assembly := {
-  case PathList("org", "apache", "hadoop", "yarn", xs@_*) => MergeStrategy.first
   case PathList("org", "apache", "commons", xs@_*) => MergeStrategy.first
-  case ("git.properties") => MergeStrategy.concat
-  case ("log4j.properties") => MergeStrategy.concat
-  case x => (assemblyMergeStrategy in assembly).value(x)
+  /*case PathList("scala", xs@_*) => MergeStrategy.first
+    a nasty workaround!!!
+  case PathList("org", xs@_*) => MergeStrategy.first
+  case PathList("javax", xs@_*) => MergeStrategy.first
+  end*/
+  case PathList("fi", "tkk", "ics", xs@_*) => MergeStrategy.first
+  case PathList("com", "esotericsoftware", xs@_*) => MergeStrategy.first
+  case PathList("org", "objectweb", xs@_*) => MergeStrategy.last
+  case PathList("javax", "xml", xs@_*) => MergeStrategy.first
+  case PathList("javax", "servlet", xs@_*) => MergeStrategy.first
+  case PathList("javax", "annotation", xs@_*) => MergeStrategy.first
+  case PathList("javax", "activation", xs@_*) => MergeStrategy.first
+  case PathList("javax", "transaction", xs@_*) => MergeStrategy.first
+  case PathList("javax", "mail", xs@_*) => MergeStrategy.first
+  case PathList("com", "twitter", xs@_*) => MergeStrategy.first
+  case PathList("org", "slf4j", xs@_*) => MergeStrategy.first
+  //META-INF/maven/com.google.guava/guava/pom.xml
+  // Added
+  case PathList("htsjdk", xs@_*) => MergeStrategy.first
+  case PathList("org", "apache", "bcel", xs@_*) => MergeStrategy.first
+  case PathList("org", "apache", "regexp", xs@_*) => MergeStrategy.first
+  case PathList("io", "netty", xs@_*) => MergeStrategy.first
+  case PathList("com", "codahale", "metrics", xs@_*) => MergeStrategy.first
+  case PathList("com", "google", "common", xs@_*) => MergeStrategy.first
+  case PathList("org", "apache", "spark", "unused", xs@_*) => MergeStrategy.first
+  case PathList("edu", "umd", "cs", "findbugs", xs@_*) => MergeStrategy.first
+  case PathList("net", "jcip", "annotations", xs@_*) => MergeStrategy.first
+  case PathList("org", "apache", "jasper", xs@_*) => MergeStrategy.first
+  case PathList("org", "fusesource", xs@_*) => MergeStrategy.first
+  case "parquet.thrift" => MergeStrategy.first
+  case PathList(ps@_*) if ps.last endsWith ".html" => MergeStrategy.first
+  case "application.conf" => MergeStrategy.concat
+  case PathList("org", "apache", "hadoop", xs@_*) => MergeStrategy.first
+  //case "META-INF/ECLIPSEF.RSA"     => MergeStrategy.discard
+  case "META-INF/mimetypes.default" => MergeStrategy.first
+  case ("META-INF/ECLIPSEF.RSA") => MergeStrategy.first
+  case ("META-INF/mailcap") => MergeStrategy.first
+  case ("plugin.properties") => MergeStrategy.first
+  case ("META-INF/maven/org.slf4j/slf4j-api/pom.xml") => MergeStrategy.first
+  case ("META-INF/maven/com.google.guava/guava/pom.xml") => MergeStrategy.first
+  case ("META-INF/maven/org.slf4j/slf4j-api/pom.properties") => MergeStrategy.first
+  // case ("META-INF/io.netty.versions.properties") => MergeStrategy.first
+  case x if x.endsWith("io.netty.versions.properties") => MergeStrategy.first
+  case x if x.endsWith("pom.properties") => MergeStrategy.first
+  case x if x.endsWith("pom.xml") => MergeStrategy.first
+  case x if x.endsWith("plugin.xml") => MergeStrategy.first
+  //case ("META-INF/maven/com.google.guava/guava/pom.xml") => MergeStrategy.first
+  case ("META-INF/native/osx/libjansi.jnilib") => MergeStrategy.first  
+  case ("META-INF/native/windows32/jansi.dll") => MergeStrategy.first
+  case ("META-INF/native/windows64/jansi.dll") => MergeStrategy.first
+  case ("log4j.properties") => MergeStrategy.first
+  case ("git.properties") => MergeStrategy.first
+  case x =>
+    val oldStrategy = (assemblyMergeStrategy in assembly).value
+    oldStrategy(x)
 }
 
 
