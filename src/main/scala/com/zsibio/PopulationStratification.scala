@@ -135,7 +135,7 @@ object PopulationStratification{
 
   def main(args: Array[String]): Unit = {
 
-    val conf = new SparkConf().setAppName("PopStrat").setMaster("local").set("spark.ext.h2o.repl.enabled", "false").set("spark.driver.maxResultSize", "0")
+    val conf = new SparkConf().setAppName("PopStrat").set("spark.ext.h2o.repl.enabled", "false").set("spark.driver.maxResultSize", "0")
     val sc = new SparkContext(conf)
     val sqlContext = new SQLContext(sc)
     import sqlContext.implicits._
@@ -287,7 +287,8 @@ object PopulationStratification{
         res.iterator
       }
 
-      val listGeno = snpIdSet.repartition(1).zipPartitions(snpSet.repartition(1))(getListGeno)
+      val nPartitions = snpSet.getNumPartitions
+      val listGeno = snpIdSet.repartition(nPartitions).zipPartitions(snpSet)(getListGeno)
       // val listGeno = snpIdSet.zip(snpSet).map{case((snpId, snpPos), snp) => toTSNP(snpId, snpPos, snp.toVector)}
       // println(listGeno.collect().toList)
 
