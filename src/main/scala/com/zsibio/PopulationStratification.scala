@@ -54,12 +54,14 @@ class Parameters(
                      cvClassification : Boolean,
                      cvClustering : Boolean,
                      nRepeatClassification : Int,
-                     nRepeatClustering : Int
+                     nRepeatClustering : Int,
+                     chrFreqFile : String,
+                     chrFreqFileOutput : String
                      ){
   def this() = this("file:///home/anastasiia/1000genomes/ALL.chrMT.phase3_callmom-v0_4.20130502.genotypes.vcf.adam",
     "file:///home/anastasiia/1000genomes/ALL.panel", "super_pop", Array("AFR", "EUR", "AMR", "EAS", "SAS"),
     0., true, 0.005, 1., true, "compsite", 0.2, 500000, Int.MaxValue, false, true, "PCA", "GramSVD", null,
-    true, false, "svm", null, true, false, 1, 1)
+    true, false, "svm", null, true, false, 1, 1, null, "variants_frequencies.csv")
 
   val _chrFile = chrFile
   val _panelFile = panelFile
@@ -87,6 +89,8 @@ class Parameters(
   val _cvClustering : Boolean = cvClustering
   val _nRepeatClassification : Int = nRepeatClassification
   val _nRepeatClustering : Int = nRepeatClustering
+  val _chrFreqFile : String = chrFreqFile
+  val _chrFreqFileOutput : String = chrFreqFileOutput
 }
 
 object PopulationStratification{
@@ -100,6 +104,20 @@ object PopulationStratification{
       }.groupByKey.sortByKey().values.map {
         indexedRow => indexedRow.toSeq.sortBy(_._1).map(_._2)
       }
+    }
+  }
+
+  implicit class RDDwr[T, Y, Z](rdd: RDD[(T, Y, Z)]) {
+    def writeToCsv(filename: String): Unit = {
+      val tmpParquetDir = "Posts.tmp.parquet"
+      rdd.repartition(1).map { case (id, valueY, valueZ) => Array(id, valueY, valueZ).mkString(",")}
+        .saveAsTextFile(tmpParquetDir)
+      val dir = new File(tmpParquetDir)
+
+      val tmpTsvFile = tmpParquetDir + File.separatorChar + "part-00000"
+      (new File(tmpTsvFile)).renameTo(new File(filename))
+      dir.listFiles.foreach( f => f.delete )
+      dir.delete
     }
   }
 
@@ -150,11 +168,15 @@ object PopulationStratification{
     var parameters : Parameters = null
     var outputFilename : String = null
     var timeResult : List[String] = Nil
+    var inputVarinatsFrequencies : RDD[(String, Int, Double)] = null
+    var nCores: Int = 5
 
     if (args.length == 0) {
       parameters = new Parameters()
     }
-    else if (args.length == 1) {
+    else if (args.length >= 1) {
+      if (args.length == 2) nCores = args(1).toInt
+
       parametersFile = args(0)
 
       val params = sc.textFile(parametersFile).map(line => line.split(",").map(elem => elem.trim))
@@ -200,7 +222,8 @@ object PopulationStratification{
         paramsMap.get("clustering").getOrElse(null).toBoolean, paramsMap.get("classification").getOrElse(null).toBoolean,
         paramsMap.get("clustering_method").getOrElse(null), paramsMap.get("classification_method").getOrElse(null),
         paramsMap.get("cv_classification").getOrElse(null).toBoolean, paramsMap.get("cv_clustering").getOrElse(null).toBoolean,
-        paramsMap.get("n_reapeat_classification").getOrElse(null).toInt, paramsMap.get("n_reapeat_clustering").getOrElse(null).toInt
+        paramsMap.get("n_reapeat_classification").getOrElse(null).toInt, paramsMap.get("n_reapeat_clustering").getOrElse(null).toInt,
+        paramsMap.get("chr_frequencies_file").getOrElse(null), paramsMap.get("chr_frequencies_file_output").getOrElse(null)
       )
 
       if (parameters._isFrequencies == false) {
@@ -236,8 +259,11 @@ object PopulationStratification{
       bpanel.value.contains(genotype.getSampleId)
     })
 
+   if (parameters._chrFreqFile != null){
+      inputVarinatsFrequencies = sc.textFile(parameters._chrFreqFile).map(line => line.split(",").map(elem => elem.trim)).map(x => (x(0), x(1).toInt, x(2).toDouble))
+    }
 
-    val gts = new Population(sc, sqlContext, genotypes, panel, parameters._missingRate, parameters._infFreq, parameters._supFreq)
+    val gts = new Population(sc, sqlContext, genotypes, panel, parameters._missingRate, parameters._infFreq, parameters._supFreq, inputVarinatsFrequencies)
     val variantsRDD: RDD[(String, Array[SampleVariant])] = gts.sortedVariantsBySampelId
     println(s"Number of SNPs is ${variantsRDD.first()._2.length}")
 
@@ -245,6 +271,9 @@ object PopulationStratification{
     val fsFreqTime = time.formatTimeDiff(t0, t1)
     println(s"Feature selection. Frequencies: $fsFreqTime")
     timeResult ::= (s"Feature selection. Frequencies: $fsFreqTime")
+
+    if (parameters._chrFreqFileOutput != null)
+      gts.freq.writeToCsv(parameters._chrFreqFileOutput)
 
       /**
         * Variables for prunning data. Used for both ldPruning and Outliers detection cases
@@ -287,8 +316,8 @@ object PopulationStratification{
         res.iterator
       }
 
-      val nPartitions = snpSet.getNumPartitions
-      val listGeno = snpIdSet.repartition(nPartitions).zipPartitions(snpSet)(getListGeno)
+      val nPartitions = 4 * nCores//snpSet.getNumPartitions
+      val listGeno = snpIdSet.repartition(nPartitions).zipPartitions(snpSet.repartition(nPartitions))(getListGeno)
       // val listGeno = snpIdSet.zip(snpSet).map{case((snpId, snpPos), snp) => toTSNP(snpId, snpPos, snp.toVector)}
       // println(listGeno.collect().toList)
 
@@ -351,7 +380,6 @@ object PopulationStratification{
         * Dimensionality Reduction
         */
 
-    val unsupervised = new Unsupervised(sc, sqlContext)
     if (parameters._isDimRed == true) {
       println("Dimensionality Reduction")
       t0 = System.currentTimeMillis()
@@ -364,8 +392,11 @@ object PopulationStratification{
 
         case "PCA" =>{
           println(" PCA")
+          // val unsupervised = new Unsupervised(sc, sqlContext)
+          val pcaDimRed = new PCADimReduction(sc, sqlContext)
           ds = gts.getDataSet(variantsRDDprunned)
-          ds = unsupervised.pcaH2O(ds)
+          ds = pcaDimRed.pcaML(ds, "Region")
+          // ds = unsupervised.pcaH2O(ds)
           println(ds.count(), ds.columns.length)
         }
         /**
@@ -420,6 +451,7 @@ object PopulationStratification{
 
       parameters._clusterMethod match {
         case "kmeans" => {
+          val unsupervised = new Unsupervised(sc, sqlContext)
           if (parameters._cvClustering == true){
             val kTuning = unsupervised.kMeansTuning(trainingDS, responseColumn = "Region", ignoredColumns = Array("SampleId"), kSet = setK, nReapeat = 5)
             println("K estimation: ")

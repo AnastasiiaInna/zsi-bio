@@ -26,3 +26,5 @@ classification,TRUE
 classification_method,svm
 cv_classification,TRUE
 n_reapeat_classification,2
+chr_frequencies_file,null
+chr_frequencies_file_output,hdfs:///popgen/variants_frequencies.csv
