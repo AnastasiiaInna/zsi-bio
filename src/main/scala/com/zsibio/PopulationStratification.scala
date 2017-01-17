@@ -154,7 +154,11 @@ object PopulationStratification{
 
   def main(args: Array[String]): Unit = {
 
-    val conf = new SparkConf().setAppName("PopStrat").set("spark.ext.h2o.repl.enabled", "false").set("spark.ext.h2o.topology.change.listener.enabled", "false").set("spark.driver.maxResultSize", "0")
+    val conf = new SparkConf()
+			.setAppName("PopStrat")
+			.set("spark.ext.h2o.repl.enabled", "false")
+			//.set("spark.ext.h2o.topology.change.listener.enabled", "false")
+			.set("spark.driver.maxResultSize", "0")
     val sc = new SparkContext(conf)
     val sqlContext = new SQLContext(sc)
     import sqlContext.implicits._
@@ -252,20 +256,24 @@ object PopulationStratification{
       ).collectAsMap.filter(tuple => filter(tuple._1, tuple._2))
     }
 
-    t0 = System.currentTimeMillis()
-
+   
     val panel = extract(parameters._panelFile, parameters._pop, (sampleID: String, pop: String) => parameters._popSet.contains(pop))
     val bpanel = sc.broadcast(panel)
-    val allGenotypes: RDD[Genotype] = time.time(sc.loadGenotypes(parameters._chrFile), "\nLoad gts_adam\n")
+    val allGenotypes: RDD[Genotype] = sc.loadGenotypes(parameters._chrFile)
     val genotypes: RDD[Genotype] = allGenotypes.filter(genotype => {
       bpanel.value.contains(genotype.getSampleId)
     })
+
+   //   t0 = System.currentTimeMillis()
 
    if (parameters._chrFreqFile != "null"){
       inputVarinatsFrequencies = sc.textFile(parameters._chrFreqFile).map(line => line.split(",").map(elem => elem.trim)).map(x => (x(0), x(1).toInt, x(2).toDouble))
     }
 
     val gts = new Population(sc, sqlContext, genotypes, panel, parameters._missingRate, parameters._infFreq, parameters._supFreq, inputVarinatsFrequencies)
+    println(s"Total number of SNPs: ${gts.freq.count}")
+    
+    t0 = System.currentTimeMillis()
     val variantsRDD: RDD[(String, Array[SampleVariant])] = gts.sortedVariantsBySampelId
     println(s"Number of SNPs is ${variantsRDD.first()._2.length}")
 
@@ -384,7 +392,7 @@ object PopulationStratification{
 
     if (parameters._isDimRed == true) {
       println("Dimensionality Reduction")
-      val unsupervised = new Unsupervised(sc, sqlContext)
+      // val unsupervised = new Unsupervised(sc, sqlContext)
       t0 = System.currentTimeMillis()
 
       parameters._dimRedMethod match {
@@ -397,9 +405,9 @@ object PopulationStratification{
           println(" PCA")
         //  val unsupervised = new Unsupervised(sc, sqlContext)
           val pcaDimRed = new PCADimReduction(sc, sqlContext)
-           ds = gts.getDataSet(variantsRDDprunned)
-          // ds = pcaDimRed.pcaML(ds, "Region")
-          ds = unsupervised.pcaH2O(ds)
+          ds = gts.getDataSet(variantsRDDprunned)
+          ds = pcaDimRed.pcaML(ds, 20, "Region")
+         // ds = unsupervised.pcaH2O(ds)
           println(ds.count(), ds.columns.length)
         }
         /**
@@ -531,7 +539,7 @@ object PopulationStratification{
         case "svm" => {
           println("Start svm")
           pipelineModelsList = trainDfList.map {trainingDf  =>
-            val svmModel = classification.svm(trainingDf, cv = parameters._cvClassification, cost = Array(1))
+            val svmModel = classification.svm(trainingDf, cv = parameters._cvClassification, cost = Array(1), maxIter = Array(1))
             svmModel
           }.toList
 
