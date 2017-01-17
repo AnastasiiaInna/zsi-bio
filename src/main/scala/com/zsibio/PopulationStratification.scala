@@ -109,7 +109,7 @@ object PopulationStratification{
 
   implicit class RDDwr[T, Y, Z](rdd: RDD[(T, Y, Z)]) {
     def writeToCsv(filename: String): Unit = {
-      val tmpParquetDir = "Posts.tmp.parquet"
+      val tmpParquetDir = "hdfs:///popgen/Posts.tmp.parquet"
       rdd.repartition(1).map { case (id, valueY, valueZ) => Array(id, valueY, valueZ).mkString(",")}
         .saveAsTextFile(tmpParquetDir)
       val dir = new File(tmpParquetDir)
@@ -121,19 +121,20 @@ object PopulationStratification{
     }
   }
 
+
   implicit class dfWriter(dataSet: DataFrame) {
-    def writeToCsv(filename: String): Unit = {
-      val tmpParquetDir = "Posts.tmp.parquet"
+    def writeToCsv(filename: String, isHeader: String = "true"): Unit = {
+      val tmpParquetDir = "hdfs:///popgen/Posts.tmp.parquet"
       dataSet.write
         .format("com.databricks.spark.csv")
-        .option("header", "true")
-        .save(tmpParquetDir)
+        .option("header", isHeader)
+        .save(filename)//tmpParquetDir)
 
-      val dir = new File(tmpParquetDir)
+    /*  val dir = new File(tmpParquetDir)
       val tmpTsvFile = tmpParquetDir + File.separatorChar + "part-00000"
       (new File(tmpTsvFile)).renameTo(new File(filename))
       dir.listFiles.foreach( f => f.delete )
-      dir.delete
+      dir.delete */
     }
   }
 
@@ -153,7 +154,7 @@ object PopulationStratification{
 
   def main(args: Array[String]): Unit = {
 
-    val conf = new SparkConf().setAppName("PopStrat").set("spark.ext.h2o.repl.enabled", "false").set("spark.driver.maxResultSize", "0")
+    val conf = new SparkConf().setAppName("PopStrat").set("spark.ext.h2o.repl.enabled", "false").set("spark.ext.h2o.topology.change.listener.enabled", "false").set("spark.driver.maxResultSize", "0")
     val sc = new SparkContext(conf)
     val sqlContext = new SQLContext(sc)
     import sqlContext.implicits._
@@ -223,7 +224,8 @@ object PopulationStratification{
         paramsMap.get("clustering_method").getOrElse(null), paramsMap.get("classification_method").getOrElse(null),
         paramsMap.get("cv_classification").getOrElse(null).toBoolean, paramsMap.get("cv_clustering").getOrElse(null).toBoolean,
         paramsMap.get("n_reapeat_classification").getOrElse(null).toInt, paramsMap.get("n_reapeat_clustering").getOrElse(null).toInt,
-        paramsMap.get("chr_frequencies_file").getOrElse(null), paramsMap.get("chr_frequencies_file_output").getOrElse(null)
+        paramsMap.get("chr_frequencies_file").getOrElse(null), 
+	paramsMap.get("chr_frequencies_file_output").getOrElse(null)
       )
 
       if (parameters._isFrequencies == false) {
@@ -254,12 +256,12 @@ object PopulationStratification{
 
     val panel = extract(parameters._panelFile, parameters._pop, (sampleID: String, pop: String) => parameters._popSet.contains(pop))
     val bpanel = sc.broadcast(panel)
-    val allGenotypes: RDD[Genotype] = sc.loadGenotypes(parameters._chrFile)
+    val allGenotypes: RDD[Genotype] = time.time(sc.loadGenotypes(parameters._chrFile), "\nLoad gts_adam\n")
     val genotypes: RDD[Genotype] = allGenotypes.filter(genotype => {
       bpanel.value.contains(genotype.getSampleId)
     })
 
-   if (parameters._chrFreqFile != null){
+   if (parameters._chrFreqFile != "null"){
       inputVarinatsFrequencies = sc.textFile(parameters._chrFreqFile).map(line => line.split(",").map(elem => elem.trim)).map(x => (x(0), x(1).toInt, x(2).toDouble))
     }
 
@@ -272,8 +274,8 @@ object PopulationStratification{
     println(s"Feature selection. Frequencies: $fsFreqTime")
     timeResult ::= (s"Feature selection. Frequencies: $fsFreqTime")
 
-    if (parameters._chrFreqFileOutput != null)
-      gts.freq.writeToCsv(parameters._chrFreqFileOutput)
+    if (parameters._chrFreqFile == "null")
+      sqlContext.createDataFrame(gts.freq.repartition(1)).writeToCsv(parameters._chrFreqFileOutput, "false")
 
       /**
         * Variables for prunning data. Used for both ldPruning and Outliers detection cases
@@ -382,6 +384,7 @@ object PopulationStratification{
 
     if (parameters._isDimRed == true) {
       println("Dimensionality Reduction")
+      val unsupervised = new Unsupervised(sc, sqlContext)
       t0 = System.currentTimeMillis()
 
       parameters._dimRedMethod match {
@@ -392,11 +395,11 @@ object PopulationStratification{
 
         case "PCA" =>{
           println(" PCA")
-          // val unsupervised = new Unsupervised(sc, sqlContext)
+        //  val unsupervised = new Unsupervised(sc, sqlContext)
           val pcaDimRed = new PCADimReduction(sc, sqlContext)
-          ds = gts.getDataSet(variantsRDDprunned)
-          ds = pcaDimRed.pcaML(ds, "Region")
-          // ds = unsupervised.pcaH2O(ds)
+           ds = gts.getDataSet(variantsRDDprunned)
+          // ds = pcaDimRed.pcaML(ds, "Region")
+          ds = unsupervised.pcaH2O(ds)
           println(ds.count(), ds.columns.length)
         }
         /**
@@ -526,8 +529,9 @@ object PopulationStratification{
 
       parameters._classificationMethod match {
         case "svm" => {
+          println("Start svm")
           pipelineModelsList = trainDfList.map {trainingDf  =>
-            val svmModel = classification.svm(trainingDf, cv = parameters._cvClassification)
+            val svmModel = classification.svm(trainingDf, cv = parameters._cvClassification, cost = Array(1))
             svmModel
           }.toList
 
@@ -536,6 +540,7 @@ object PopulationStratification{
         }
 
         case "dt" => {
+	  println("Start dt")
           pipelineModelsList = trainDfList.map {trainingDf  =>
             val dtModel = classification.decisionTrees(trainingDS,  cv = parameters._cvClassification)//, "Region", 10, Array(1.0))
             val dtStage = dtModel.stages(2).asInstanceOf[DecisionTreeClassificationModel]
@@ -545,6 +550,7 @@ object PopulationStratification{
         }
 
         case "rf" => {
+	  println("Start rf")
           pipelineModelsList = trainDfList.map { trainingDf =>
             val rfModel = classification.randomForest(trainingDS, cv = parameters._cvClassification)
             val dtStage = rfModel.stages(2).asInstanceOf[RandomForestClassificationModel]

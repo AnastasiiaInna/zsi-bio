@@ -74,7 +74,7 @@ class Unsupervised[T] (sc: SparkContext, sqlContext: SQLContext) extends Seriali
     val nFeatures = training.numCols() - 2 // remove SampleId and Region
     val nObservations = training.numRows().toInt
 
-    println(nFeatures, nObservations)
+    println(s"nObservations = $nObservations, nFeatures = $nFeatures")
 
     val pcaParameters = new PCAParameters()
     pcaParameters._train = training._key
@@ -85,10 +85,11 @@ class Unsupervised[T] (sc: SparkContext, sqlContext: SQLContext) extends Seriali
     pcaParameters._use_all_factor_levels = true
     pcaParameters._pca_method = pcaMethod
     pcaParameters._max_iterations = 100
-    pcaParameters._transform = DataInfo.TransformType.NORMALIZE
+//    pcaParameters._transform = DataInfo.TransformType.NORMALIZE
 
 
     val pcaObject = new PCA(pcaParameters)
+	println ("PCA train")
     val pcaModel = pcaObject.trainModel.get
 
     val pcaImportance = pcaModel._output._importance
