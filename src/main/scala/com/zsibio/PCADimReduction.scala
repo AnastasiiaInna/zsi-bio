@@ -11,7 +11,7 @@ import org.apache.spark.ml.{Pipeline, PipelineModel}
 
 class PCADimReduction (sc: SparkContext, sqlContext: SQLContext) extends Serializable {
 
-  def pcaML(ds: DataFrame, labels: String = "Region") : DataFrame ={
+  def pcaML(ds: DataFrame, k: Int, labels: String = "Region") : DataFrame ={
     val colNames = ds.drop(labels).drop("SampleId").columns
     val assembler = new VectorAssembler()
       .setInputCols(colNames)
@@ -20,7 +20,7 @@ class PCADimReduction (sc: SparkContext, sqlContext: SQLContext) extends Seriali
     val pca = new PCA()
       .setInputCol("features")
       .setOutputCol("pcaFeatures")
-      .setK(10)
+      .setK(k)
 
     val pipeline = new Pipeline()
       .setStages(Array(assembler, pca))
@@ -28,7 +28,7 @@ class PCADimReduction (sc: SparkContext, sqlContext: SQLContext) extends Seriali
     val model = pipeline.fit(ds)
     val pc = model.stages(1).asInstanceOf[PCAModel].pc
 
-    model.transform(ds).drop("features")
+    model.transform(ds).select("Region", "SampleId", "pcaFeatures")
   }
 
 
