@@ -130,6 +130,13 @@ object PopulationStratification{
         .option("header", isHeader)
         .save(filename)//tmpParquetDir)
 
+      /*
+      val vcf = "hdfs:///popgen/chr22.vcf"
+      val gts: RDD[Genotype] = sc.loadGenotypes(vcf)
+      val adamFile = "hdfs:///popgen/chr22.adam"
+      gts.adamParquetSave(adamFile) */
+
+
     /*  val dir = new File(tmpParquetDir)
       val tmpTsvFile = tmpParquetDir + File.separatorChar + "part-00000"
       (new File(tmpTsvFile)).renameTo(new File(filename))
@@ -406,7 +413,9 @@ object PopulationStratification{
         //  val unsupervised = new Unsupervised(sc, sqlContext)
           val pcaDimRed = new PCADimReduction(sc, sqlContext)
           ds = gts.getDataSet(variantsRDDprunned)
-          ds = pcaDimRed.pcaML(ds, 20, "Region")
+          ds = pcaDimRed.pcaML(ds, 20, "Region", 0.7, "tempPcaFeatures")
+          pcaDimRed.explainedVariance(ds, 20, varianceTreshold = 0.7, "tempPcaFeatures")
+          ds = pcaDimRed.pcaML(ds, pcaDimRed._nPC, "Region", 07, "pcaFeatures")
          // ds = unsupervised.pcaH2O(ds)
           println(ds.count(), ds.columns.length)
         }
@@ -464,7 +473,7 @@ object PopulationStratification{
         case "kmeans" => {
           val unsupervised = new Unsupervised(sc, sqlContext)
           if (parameters._cvClustering == true){
-            val kTuning = unsupervised.kMeansTuning(trainingDS, responseColumn = "Region", ignoredColumns = Array("SampleId"), kSet = setK, nReapeat = 5)
+            val kTuning = unsupervised.kMeansTuning(trainingDS, responseColumn = "Region", ignoredColumns = Array("SampleId"), kSet = setK, nReapeat = parameters._nRepeatClustering)
             println("K estimation: ")
             kTuning.foreach{case(k, purity) => println(s"k = ${k}, purity = ${purity}")}
             k = kTuning.maxBy(_._2)._1
@@ -476,7 +485,7 @@ object PopulationStratification{
 
         case "gmm" => {
           if (parameters._cvClustering == true) {
-            val kTuning = clustering.gmmKTuning(trainingDS, Array("SampleId", "Region"), setK, nReapeat = 5)
+            val kTuning = clustering.gmmKTuning(trainingDS, Array("SampleId", "Region"), setK, nReapeat = parameters._nRepeatClustering)
             println("K estimation: ")
             kTuning.foreach { case (k, purity) => println(s"k = ${k}, purity = ${purity}") }
             k = kTuning.maxBy(_._2)._1
@@ -488,7 +497,7 @@ object PopulationStratification{
 
         case "bkm" => {
           if (parameters._cvClustering == true) {
-            val kTuning = clustering.bkmKTuning(trainingDS, Array("SampleId", "Region"), setK, nReapeat = 5)
+            val kTuning = clustering.bkmKTuning(trainingDS, Array("SampleId", "Region"), setK, nReapeat = parameters._nRepeatClustering)
             println("K estimation: ")
             kTuning.foreach { case (k, purity) => println(s"k = ${k}, purity = ${purity}") }
             k = kTuning.maxBy(_._2)._1

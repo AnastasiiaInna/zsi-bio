@@ -1,7 +1,7 @@
 package com.zsibio
 
 import org.apache.spark.SparkContext
-import org.apache.spark.mllib.linalg.{Vector, Vectors}
+import org.apache.spark.mllib.linalg.{DenseVector, Vector, Vectors}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{DataFrame, SQLContext}
 import org.apache.spark.mllib.clustering.{BisectingKMeans, BisectingKMeansModel, GaussianMixture, GaussianMixtureModel}
@@ -23,10 +23,22 @@ trait ClusteringMethods {
 @SerialVersionUID(15L)
 class Clustering (sc: SparkContext, sqlContext: SQLContext) extends Serializable with ClusteringMethods{
 
-  private def dfToRDD (ds: DataFrame, categoricalVars : Array[String]) : RDD[Vector] = {
+  /* Function for DataFrame with multiple columns of features */
+/*
+    private def dfToRDD (ds: DataFrame, categoricalVars : Array[String]) : RDD[Vector] = {
     val arrsnps : Array[DataFrame] = categoricalVars.map{var d : DataFrame = ds; variable => {d = d.drop(variable); d}}
     val snps : DataFrame = arrsnps(arrsnps.length - 1)
     snps.rdd.map(row => Vectors.dense(row.toSeq.toArray.map(_.asInstanceOf[Double]))).cache()
+  }*/
+
+  /* Function for DataFrame transformation with SINGLE column with multiple features */
+  private def dfToRDD (ds: DataFrame,  categoricalVars : Array[String]) : RDD[Vector] = {
+    val arrsnps : Array[DataFrame] = categoricalVars.map{var d : DataFrame = ds; variable => {d = d.drop(variable); d}}
+    val pcaFeaturesDS : DataFrame = arrsnps(arrsnps.length - 1)
+    // val pcaFeaturesDS : DataFrame = ds.select("pcaFeatures")
+    val featuresDense : RDD[DenseVector] = pcaFeaturesDS.rdd.map(row => row(0).asInstanceOf[DenseVector])
+    val features = featuresDense.map{row => row.toArray}
+    features.map{row => Vectors.dense(row)}
   }
 
   def gmmKTuning(ds: DataFrame, categoricalVars : Array[String], kSet : Seq[Int], maxIteration: Int = 10, nReapeat: Int = 10): scala.collection.Map[Int, Double] = {
