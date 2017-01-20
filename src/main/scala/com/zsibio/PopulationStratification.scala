@@ -13,8 +13,9 @@ import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.rdd.RDD
 import org.bdgenomics.adam.rdd.ADAMContext
 import org.bdgenomics.adam.rdd.ADAMContext._
-import org.bdgenomics.formats.avro._//{Genotype, GenotypeAllele}
-import org.apache.spark.sql.{DataFrame, SQLContext}
+import org.bdgenomics.formats.avro._
+import org.apache.spark.sql.{DataFrame, Row, SQLContext}
+import org.apache.spark.sql.functions.{concat, lit}
 import org.apache.spark.mllib.evaluation.MulticlassMetrics
 import org.apache.spark.mllib.regression.LabeledPoint
 import org.apache.sysml.api.ml.SVMModel
@@ -144,7 +145,6 @@ object PopulationStratification {
         (new File(tmpTsvFile)).renameTo(new File(filename))
         dir.listFiles.foreach( f => f.delete )
         dir.delete */
-
     }
   }
 
@@ -172,6 +172,9 @@ object PopulationStratification {
   def altCount(genotype: Genotype): Int = {
     genotype.getAlleles.asScala.count(_ != GenotypeAllele.Ref)
   }
+
+  def prun(rdd: RDD[(String, Array[(String, Int)])], snpIdSet: List[String]): RDD[(String, Array[(String, Int)])] =
+    rdd.map{ case (sample, sortedVariants) => (sample, sortedVariants.filter(varinat => snpIdSet contains (varinat._1)))}
 
   def main(args: Array[String]): Unit = {
 
@@ -277,7 +280,7 @@ object PopulationStratification {
       ).collectAsMap.filter(tuple => filter(tuple._1, tuple._2))
     }
 
-   
+
     val panel = extract(parameters._panelFile, parameters._pop, (sampleID: String, pop: String) => parameters._popSet.contains(pop))
     val bpanel = sc.broadcast(panel)
 
@@ -287,51 +290,92 @@ object PopulationStratification {
       bpanel.value.contains(genotype.getSampleId)
     })
 
-    val gts = new PopulationGe(sc, sqlContext, genotypes, panel, parameters._missingRate, parameters._infFreq, parameters._supFreq)
-    t0 = System.currentTimeMillis()
-    val sampleCount = genotypes.map(_.getSampleId).distinct.count.toInt
-    t1 = System.currentTimeMillis()
-    println(s"Read genotype: ${time.formatTimeDiff(t0, t1)}")
-    timeResult ::= (s"Read genotype: ${time.formatTimeDiff(t0, t1)}")
+    val df = sqlContext.read.parquet(parameters._chrFile)
+    df.registerTempTable("gts")
 
-    if (parameters._chrFreqFile == "null"){
-      t0 = System.currentTimeMillis()
-      variantsDF = gts.getVariantsDF
-/*      val variantsById : RDD[(String, Iterable[Genotype])] = genotypes.keyBy(g => variantId(g)).groupByKey.cache
-      val variantsSize : RDD[(String, Int)] = genotypes.map(g => (variantId(g), g.getAlleles.size)).reduceByKey((x,y) => x + y)
-      val variantsFreq : RDD[(String, Int)] = genotypes.map(g => (variantId(g), altCount(g))).reduceByKey((x, y) => x + y)
+    if (parameters._chrFreqFile == "null") {
+      val variantsNonmissingsDF = sqlContext.sql(
+        "select " +
+          "concat(variant.contig.contigName, ':', variant.start) as variantId," +
+/*          "variant.contig.contigName," +
+          "variant.start," +
+          "variant.referenceAllele," +
+          "variant.alternateAllele," +*/
+          "count(*) as nonmissing " +
+        "from gts " +
+        "group by variant.contig.contigName, variant.start")
 
-      val variantsSizeDF = sqlContext.createDataFrame(variantsSize).toDF("VariantId", "VariantSize")
-      val variantsFreqDF = sqlContext.createDataFrame(variantsFreq).toDF("VariantId", "VariantFrequencies")
-      val variantsDF = variantsSizeDF.join(variantsFreqDF, "VariantId")*/
+      val nonMultiallelicDF = sqlContext.sql(
+        "select " +
+          "concat(variant.contig.contigName, ':', variant.start) as variantId " +
+        "from gts " +
+        "group by sampleId, variant.contig.contigName, variant.start, variant.referenceAllele having count(*)<=1")
+        .distinct()
 
-      t1 = System.currentTimeMillis()
-      println(s"Count frequencies: ${time.formatTimeDiff(t0, t1)}")
-      timeResult ::= (s"Count frequencies: ${time.formatTimeDiff(t0, t1)}")
-      variantsDF.repartition(1).writeToCsv(parameters._chrFreqFileOutput, "true")
+      val variantsFreqDF = sqlContext.sql(
+        "select " +
+          "concat(variant.contig.contigName, ':', variant.start) as variantId," +
+          "variant.contig.contigName," +
+          "variant.start," +
+          "variant.referenceAllele," +
+          "variant.alternateAllele," +
+          "sum(case when alleles[0] = alleles[1] then 2 else 1 end) as frequency " +
+        "from gts " +
+          "where alleles[0] = 'Alt' or alleles[1] = 'Alt' " +
+        "group by variant.contig.contigName, variant.start, variant.`end`, variant.referenceAllele, variant.alternateAllele")
+
+      variantsDF = variantsNonmissingsDF
+        .join(nonMultiallelicDF, "variantId")
+        .join(variantsFreqDF, "variantId")
+
+      variantsDF.repartition(1).writeToCsv(parameters._chrFreqFileOutput)
+
     }
+    else
+      variantsDF = sqlContext.read.format("com.databricks.spark.csv").option("header", "true").option("inferSchema", "true").load(parameters._chrFreqFile)
 
-    else variantsDF = sqlContext.read.format("com.databricks.spark.csv").option("header", "true").option("inferSchema", "true").load(parameters._chrFreqFile)
+    var genotypesDF = sqlContext.sql(
+      "select " +
+        "sampleId," +
+        "concat(variant.contig.contigName, ':', variant.start) as variantId, " +
+     /* "variant.contig.contigName,"+
+        "variant.start,"+
+        "variant.referenceAllele," +
+        "variant.alternateAllele," +*/
+        "count(*) as count " +
+      "from gts " +
+      "group by sampleId, variant.contig.contigName, variant.start")
+      .distinct()
+
+    val sampleCount = sqlContext.sql(
+      "select sampleId from gts group by sampleId")
+      .count
+
+    println(s"Sample number: $sampleCount")
+
+    val filteredVariantsDF = variantsDF.filter(variantsDF("nonmissing") >= (sampleCount * (1 - parameters._missingRate))
+      && variantsDF("frequency") >= (parameters._infFreq * sampleCount) && variantsDF("frequency") <= (parameters._supFreq * sampleCount)).select("variantId")
 
     t0 = System.currentTimeMillis()
-    val variantsRDD = gts.getSortedSampleData(variantsDF)
-/*
-    val filteredVariantsDF = variantsDF.filter(variantsDF("VariantSize") >= (sampleCount * (1 - parameters._missingRate))
-      && variantsDF("VariantFrequencies") >= (parameters._infFreq * sampleCount) && variantsDF("VariantFrequencies") <= (parameters._supFreq * sampleCount)).select("VariantId").cache()
-
-    val filteredVariantsId : Array[String] = filteredVariantsDF.rdd.map(row => row.mkString).collect
-    val finalGts = genotypes.filter{g => filteredVariantsId contains variantId(g)}
-
-    val sampleToData : RDD[(String, (String, Int))] = finalGts.map { g => (g.getSampleId, (variantId(g), altCount(g))) }.distinct
-    val groupedSampleData : RDD[(String, Iterable[(String, Int)])] = sampleToData.groupByKey()
-    val variantsRDD: RDD[(String, Array[(String, Int)])] = groupedSampleData.mapValues(it => it.toArray.sortBy(_._1)).cache()
-*/
-
-    println(s"Number of samples: ${variantsRDD.count}")
+    filteredVariantsDF.show(20)
     t1 = System.currentTimeMillis()
     val fsFreqTime = time.formatTimeDiff(t0, t1)
     println(s"Feature selection. Frequencies: $fsFreqTime")
     timeResult ::= (s"Feature selection. Frequencies: $fsFreqTime")
+
+    t0 = System.currentTimeMillis()
+    val sampleToData : RDD[(String, (String, Int))]= genotypesDF.rdd.map({case Row(sampleId : String, variantId : String, count : Long) => (sampleId, (variantId, count.toInt))})//=> (row(0).toString, (row(1).toString, row(2).cast[Int])//asInstanceOf[Int])))
+    val groupedSampleData : RDD[(String, Iterable[(String, Int)])] = sampleToData.groupByKey()
+    var variantsRDD : RDD[(String, Array[(String, Int)])] = groupedSampleData.mapValues(it => it.toArray.sortBy(_._1)).cache()
+    variantsRDD = prun(variantsRDD, filteredVariantsDF.map(row => row.mkString).collect.toList)
+
+    println(s"Sample number: ${variantsRDD.count}")
+    t1 = System.currentTimeMillis()
+    val dfRDDtransformTime = time.formatTimeDiff(t0, t1)
+    println(s"DF -> RDD: $dfRDDtransformTime")
+    timeResult ::= (s"DF -> RDD: $dfRDDtransformTime")
+
+    val gts = new PopulationGe(sc, sqlContext, genotypes, panel, parameters._missingRate, parameters._infFreq, parameters._supFreq)
 
       /**
         * Variables for prunning data. Used for both ldPruning and Outliers detection cases
@@ -339,9 +383,6 @@ object PopulationStratification {
 
     var variantsRDDprunned: RDD[(String, Array[(String, Int)])] = variantsRDD
     var prunnedSnpIdSet: List[String] = null
-
-    def prun(rdd: RDD[(String, Array[(String, Int)])], snpIdSet: List[String]): RDD[(String, Array[(String, Int)])] =
-      rdd.map{ case (sample, sortedVariants) => (sample, sortedVariants.filter(varinat => snpIdSet contains (varinat._1)))}
 
       /**
         *  LDPruning
@@ -454,9 +495,9 @@ object PopulationStratification {
         //  val unsupervised = new Unsupervised(sc, sqlContext)
           val pcaDimRed = new PCADimReduction(sc, sqlContext)
           ds = gts.getDataSet(variantsRDDprunned)
-          ds = pcaDimRed.pcaML(ds, 20, "Region", 0.7, "tempPcaFeatures")
-          pcaDimRed.explainedVariance(ds, 20, varianceTreshold = 0.7, "tempPcaFeatures")
-          ds = pcaDimRed.pcaML(ds, pcaDimRed._nPC, "Region", 07, "pcaFeatures")
+          ds = pcaDimRed.pcaML(ds, 10, "Region", 0.7, "tempPcaFeatures")
+         // pcaDimRed.explainedVariance(ds, 20, varianceTreshold = 0.7, "tempPcaFeatures")
+         // ds = pcaDimRed.pcaML(ds, pcaDimRed._nPC, "Region", 07, "pcaFeatures")
          // ds = unsupervised.pcaH2O(ds)
           println(ds.count(), ds.columns.length)
         }
