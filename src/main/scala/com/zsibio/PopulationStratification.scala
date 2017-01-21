@@ -15,7 +15,7 @@ import org.bdgenomics.adam.rdd.ADAMContext
 import org.bdgenomics.adam.rdd.ADAMContext._
 import org.bdgenomics.formats.avro._
 import org.apache.spark.sql.{DataFrame, Row, SQLContext}
-import org.apache.spark.sql.functions.{concat, lit}
+import org.apache.spark.sql.functions._
 import org.apache.spark.mllib.evaluation.MulticlassMetrics
 import org.apache.spark.mllib.regression.LabeledPoint
 import org.apache.sysml.api.ml.SVMModel
@@ -334,6 +334,8 @@ object PopulationStratification {
     else
       variantsDF = sqlContext.read.format("com.databricks.spark.csv").option("header", "true").option("inferSchema", "true").load(parameters._chrFreqFile)
 
+    variantsDF.registerTempTable("variants")
+
     var genotypesDF = sqlContext.sql(
       "select " +
         "sampleId," +
@@ -353,23 +355,32 @@ object PopulationStratification {
 
     println(s"Sample number: $sampleCount")
 
-    val filteredVariantsDF = variantsDF.filter(variantsDF("nonmissing") >= (sampleCount * (1 - parameters._missingRate))
-      && variantsDF("frequency") >= (parameters._infFreq * sampleCount) && variantsDF("frequency") <= (parameters._supFreq * sampleCount)).select("variantId")
+    val filteredVariantsDF = sqlContext.sql(
+      "select variantId from variants " +
+        s"where nonmissing >= $sampleCount * (1 - ${parameters._missingRate}) and " +
+         s"frequency >= ${parameters._infFreq} * $sampleCount and frequency <= ${parameters._supFreq} * $sampleCount"
+    )
+
+    val bFilteredVariantsDF = broadcast(filteredVariantsDF.as("filteredVariants"))
+    val  gtsDF = genotypesDF.as("df").join(broadcast(bFilteredVariantsDF), "variantId")
+
+    // val filteredVariantsList : Array[Any] = filteredVariantsDF.select("VariantId").map(_.get(0)).collect
+    // variantsDF = variantsDF.groupBy("sampleId").pivot("variantId", filteredVariantsList.toSeq).agg(expr("first(count)").cast("int"))
 
     t0 = System.currentTimeMillis()
-    filteredVariantsDF.show(20)
+    gtsDF.show(20)
     t1 = System.currentTimeMillis()
     val fsFreqTime = time.formatTimeDiff(t0, t1)
     println(s"Feature selection. Frequencies: $fsFreqTime")
     timeResult ::= (s"Feature selection. Frequencies: $fsFreqTime")
 
-    t0 = System.currentTimeMillis()
-    val sampleToData : RDD[(String, (String, Int))]= genotypesDF.rdd.map({case Row(sampleId : String, variantId : String, count : Long) => (sampleId, (variantId, count.toInt))})//=> (row(0).toString, (row(1).toString, row(2).cast[Int])//asInstanceOf[Int])))
+    val sampleToData : RDD[(String, (String, Int))]= gtsDF.rdd.map({case Row(variantId : String, sampleId: String, count : Long) => (sampleId, (variantId, count.toInt))})//=> (row(0).toString, (row(1).toString, row(2).cast[Int])//asInstanceOf[Int])))
     val groupedSampleData : RDD[(String, Iterable[(String, Int)])] = sampleToData.groupByKey()
     var variantsRDD : RDD[(String, Array[(String, Int)])] = groupedSampleData.mapValues(it => it.toArray.sortBy(_._1)).cache()
-    variantsRDD = prun(variantsRDD, filteredVariantsDF.map(row => row.mkString).collect.toList)
 
-    println(s"Sample number: ${variantsRDD.count}")
+
+    t0 = System.currentTimeMillis()
+    println(s"Variants number: ${variantsRDD.count}")
     t1 = System.currentTimeMillis()
     val dfRDDtransformTime = time.formatTimeDiff(t0, t1)
     println(s"DF -> RDD: $dfRDDtransformTime")
