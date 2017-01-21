@@ -7,6 +7,7 @@ package com.zsibio
 
 import java.io.File
 
+import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.ml.PipelineModel
 import org.apache.spark.ml.classification.{DecisionTreeClassificationModel, RandomForestClassificationModel}
 import org.apache.spark.{SparkConf, SparkContext}
@@ -145,6 +146,14 @@ object PopulationStratification {
         (new File(tmpTsvFile)).renameTo(new File(filename))
         dir.listFiles.foreach( f => f.delete )
         dir.delete */
+    }
+  }
+
+  implicit class RDDPart[T](rdd: RDD[T]) {
+    def partitionBy(f: T => Boolean): (RDD[T], RDD[T]) = {
+      val passes = rdd.filter(f)
+      val fails = rdd.filter(e => !f(e))
+      (passes, fails)
     }
   }
 
@@ -405,7 +414,154 @@ object PopulationStratification {
 
       val ldSize = 256
       val seq = sc.parallelize(0 until ldSize * ldSize)
-      val ldPrun = new LDPruning(sc, sqlContext, seq)
+     // val ldPrun = new LDPruning(sc, sqlContext, seq)
+
+
+      def packedCond (cond: (Int, Int) => Boolean, op: (Int, Int) => Int): Vector[Int] ={
+        seq.map(s => {
+          var g1: Int = s / 256
+          var g2: Int = s % 256
+          var sum: Int = 0
+
+          var i = 0
+          for (i <- 0 until 4) {
+            val b1: Int = g1 & 0x03
+            val b2: Int = g2 & 0x03
+
+            if (cond(b1, b2)) sum += op(b1, b2)
+            g1 >>= 2
+            g2 >>= 2
+          }
+          sum
+        }).collect().toVector
+      }
+
+      val validNumSNP = sc.broadcast(packedCond((x: Int, y: Int) => (x < 3 && y < 3), (x: Int, Int) => 1))
+      // The number of aa in a pair of packed SNPs:
+      val numSNPaa  = sc.broadcast(packedCond((x: Int, y: Int) => (x == 0 && y < 3), (x: Int, Int) => 1))
+      val numSNPaA = sc.broadcast(packedCond((x: Int, y: Int) => (x == 1 && y < 3), (x: Int, Int) => 1))
+      val numSNPAA = sc.broadcast( packedCond((x: Int, y: Int) => (x == 2 && y < 3), (x: Int, Int) => 1))
+
+      val numSNPAABB = sc.broadcast(packedCond((x: Int, y: Int) => (x == 2 && y == 2), (x: Int, Int) => 1))
+      val numSNPaabb = sc.broadcast(packedCond((x: Int, y: Int) => (x == 0 && y == 0), (x: Int, Int) => 1))
+      val numSNPaaBB = sc.broadcast(packedCond((x: Int, y: Int) => (x == 0 && y == 2), (x: Int, Int) => 1))
+      val numSNPAAbb = sc.broadcast(packedCond((x: Int, y: Int) => (x == 2 && y == 0), (x: Int, Int) => 1))
+
+      val validSNPx = sc.broadcast(packedCond((x: Int, y: Int) => (x < 3 && y < 3), (x: Int, Int) => x))
+      val validSNPx2 = sc.broadcast(packedCond((x: Int, y: Int) => (x < 3 && y < 3), (x: Int, Int) => x * x))
+      val validSNPxy = sc.broadcast(packedCond((x: Int, y: Int) => (x < 3 && y < 3), (x: Int, y:Int) => x * y))
+
+      val IncArray: Array[Array[Int]] = Array(
+        Array(0, 0, 0, 2, 0), // BB, BB
+        Array(0, 0, 1, 1, 0), // BB, AB
+        Array(0, 0, 2, 0, 0), // BB, AA
+        Array(0, 1, 0, 1, 0), // AB, BB
+        Array(0, 0, 0, 0, 2), // AB, AB
+        Array(1, 0, 1, 0, 0), // AB, AA
+        Array(0, 2, 0, 0, 0), // AA, BB
+        Array(1, 1, 0, 0, 0), // AA, AB
+        Array(2, 0, 0, 0, 0)  // AA, AA
+      )
+
+      val numAA = sc.broadcast(packedCond((x: Int, y: Int) => (x < 3 && y < 3), (x: Int, y: Int) => IncArray(x * 3 + y)(0)))
+      val numAB = sc.broadcast(packedCond((x: Int, y: Int) => (x < 3 && y < 3), (x: Int, y: Int) => IncArray(x * 3 + y)(1)))
+      val numBA = sc.broadcast(packedCond((x: Int, y: Int) => (x < 3 && y < 3), (x: Int, y: Int) => IncArray(x * 3 + y)(2)))
+      val numBB = sc.broadcast(packedCond((x: Int, y: Int) => (x < 3 && y < 3), (x: Int, y: Int) => IncArray(x * 3 + y)(3)))
+      val numDH2 = sc.broadcast(packedCond((x: Int, y: Int) => (x < 3 && y < 3), (x: Int, y: Int) => IncArray(x * 3 + y)(4)))
+
+
+      def pairComposite (snp1: Vector[Int], snp2: Vector[Int]): Double ={
+        val frequencies = (snp1, snp2).zipped.par.map{case (s1, s2) =>{
+          val g1 = if (0 <= s1 && s1 <= 2) s1 | ~0x03 else 0xFF
+          val g2 = if (0 <= s2 && s2 <= 2) s2 | ~0x03 else 0xFF
+          val p = (((g1 & 0xFF) << 8) | (g2 & 0xFF))
+          val q = (((g2 & 0xFF) << 8) | (g1 & 0xFF))
+          (validNumSNP.value(p), numSNPaa.value(p), numSNPaA.value(p), numSNPAA.value(p), numSNPaa.value(q), numSNPaA.value(q), numSNPAA.value(q),
+            numSNPAABB.value(p), numSNPaabb.value(p), numSNPaaBB.value(p), numSNPAAbb.value(p))
+        }
+        }.map(tup => List(tup._1, tup._2, tup._3, tup._4, tup._5, tup._6, tup._7,
+          tup._8, tup._9, tup._10, tup._11)).toList.transpose.map(vec => vec.sum)
+
+        val n = frequencies(0); val naa = frequencies(1);  val naA = frequencies(2);
+        val nAA = frequencies(3); val nbb = frequencies(4); val nbB = frequencies(5);
+        val nBB = frequencies(6); val nAABB = frequencies(7); val naabb = frequencies(8);
+        val naaBB = frequencies(9); val nAAbb = frequencies(10)
+
+        if (n > 0){
+          val delta: Double = (nAABB + naabb - naaBB - nAAbb) / (2.0 * n) - (naa - nAA) * (nbb - nBB) / (2.0 * n * n)
+          val pa: Double = (2 * naa + naA) / (2.0 * n)
+          val pA: Double = 1 - pa
+          val pAA: Double = nAA / n.toDouble
+          val pb: Double = (2 * nbb + nbB) / (2.0 * n)
+          val pB: Double = 1 - pb
+          val pBB: Double = nBB / n.toDouble
+          val DA: Double = pAA - pA * pA
+          val DB: Double = pBB - pB * pB
+          val t: Double = (pA * pa + DA) * (pB * pb + DB)
+          if (t > 0)
+            return delta / math.sqrt(t)
+        }
+
+        return Double.NaN
+      }
+
+      def calcLD(method: String, snp1: Vector[Int], snp2: Vector[Int]) : Double = {
+        method match {
+          case "composite" => return pairComposite(snp1, snp2)
+          /*case "r"         => return pairR(snp1, snp2)
+          case "dprime"    => return pairDPrime(snp1, snp2)
+          case "corr"      => return pairCorr(snp1, snp2)*/
+        }
+        return Double.NaN
+      }
+
+      def performLDPruning(listGeno: RDD[TSNP], method: String = "composite", ldThreshold: Double = 0.2, slideMaxBp: Int = 500000, slideMaxN: Int = Int.MaxValue): List[String] ={
+        val rnd = new Random
+        val snpNumber: Int= listGeno.count.toInt
+        val startIdx: Int  = rnd.nextInt(snpNumber - 1)
+
+        val (increaseRDD, decreaseRDD) = listGeno.partitionBy(_.snpIdx >= startIdx)
+        val decreaseRDDsorted = decreaseRDD.sortBy(tsnp => tsnp.snpIdx, false)
+        println(increaseRDD.count(), decreaseRDD.count())
+        var outputSNPIdSet = List[TSNP]()
+
+        def ldSearch(iter: Iterator[TSNP]) : Iterator[TSNP] = {
+          var prev = iter.next
+          var listTSNP: List[TSNP] = List(prev)
+          var outputSNPIdSet : List[TSNP] = List(prev)
+          while (iter.hasNext){
+            var validCnt: Int = 0
+            var totalCnt: Int = 0
+            val itCur = iter.next
+
+            listTSNP.foreach {
+              vec => {
+                totalCnt += 1
+                if ((math.abs(itCur.snpIdx - vec.snpIdx) <= slideMaxN) && (math.abs(itCur.snpPos - vec.snpPos) <= slideMaxBp)) {
+                  if (math.abs(calcLD(method, itCur.snp, vec.snp)) <= ldThreshold)
+                    validCnt += 1
+                }
+                else {
+                  validCnt += 1
+                  listTSNP = listTSNP.patch(listTSNP.indexOf(vec), Nil, 1)
+                }
+              }
+            }
+            if (totalCnt == validCnt) {
+              listTSNP ::= itCur
+              outputSNPIdSet ::= itCur
+            }
+          }
+          outputSNPIdSet.iterator
+        }
+
+        outputSNPIdSet = increaseRDD.mapPartitions(ldSearch).collect().toList
+        outputSNPIdSet :::= decreaseRDDsorted.mapPartitions(ldSearch).collect().toList
+
+        val snpIdSetPrunned : List[String] = outputSNPIdSet.map(snp => snp.snpId)
+
+        return snpIdSetPrunned
+      }
 
       def toTSNP(snpId: String, snpPos: Long, snp: Vector[Int]): TSNP = {
         new TSNP(snpPos, snpId, snpId.split(":")(1).toInt, snp)
@@ -431,9 +587,9 @@ object PopulationStratification {
       // val listGeno = snpIdSet.zip(snpSet).map{case((snpId, snpPos), snp) => toTSNP(snpId, snpPos, snp.toVector)}
       // println(listGeno.collect().toList)
 
-      prunnedSnpIdSet = ldPrun.performLDPruning(listGeno, parameters._ldMethod, parameters._ldTreshold, parameters._ldMaxBp, parameters._ldMaxN)
+      val bPrunnedSnpIdSet = sc.broadcast(performLDPruning(listGeno, parameters._ldMethod, parameters._ldTreshold, parameters._ldMaxBp, parameters._ldMaxN))
       println(prunnedSnpIdSet)
-      variantsRDDprunned = prun(variantsRDDprunned, prunnedSnpIdSet)
+      variantsRDDprunned = prun(variantsRDDprunned, bPrunnedSnpIdSet.value)
 
       t1 = System.currentTimeMillis()
       val fsLdTime = time.formatTimeDiff(t0, t1)
@@ -606,12 +762,14 @@ object PopulationStratification {
 /*      purity = clustering.purity(testPrediction.select("Region", "Predict"))
       println($"Test purity: ", purity)*/
 
-      trainPrediction.repartition(1).writeToCsv(outputFilename)
-
       t1 = System.currentTimeMillis()
       val clusterTime = time.formatTimeDiff(t0, t1)
       println(s"Clustering. ${parameters._clusterMethod} : $clusterTime")
       timeResult ::= (s"Clustering. ${parameters._clusterMethod} : $clusterTime")
+
+
+      timeResult.foreach(println)
+      trainPrediction.repartition(1).writeToCsv(outputFilename)
     }
 
     /**
@@ -699,6 +857,8 @@ object PopulationStratification {
       timeResult ::= (s"Classification. ${parameters._classificationMethod} : $classTime")
 
       testPrediction = classification._prediction
+
+      timeResult.foreach(println)
       testPrediction.repartition(1).writeToCsv(outputFilename)
     }
 
