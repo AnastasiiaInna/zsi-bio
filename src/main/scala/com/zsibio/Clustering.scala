@@ -1,6 +1,9 @@
 package com.zsibio
 
 import org.apache.spark.SparkContext
+import org.apache.spark.ml.{Pipeline, PipelineModel}
+import org.apache.spark.ml.clustering.{KMeans, KMeansModel}
+import org.apache.spark.ml.feature.{StringIndexer, VectorAssembler}
 import org.apache.spark.mllib.linalg.{DenseVector, Vector, Vectors}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{DataFrame, SQLContext}
@@ -39,6 +42,33 @@ class Clustering (sc: SparkContext, sqlContext: SQLContext) extends Serializable
     val featuresDense : RDD[DenseVector] = pcaFeaturesDS.rdd.map(row => row(0).asInstanceOf[DenseVector])
     val features = featuresDense.map{row => row.toArray}
     features.map{row => Vectors.dense(row)}
+  }
+
+  def kmeansML(ds: DataFrame, labels: String = "Region", ignoredColumn: String = "SampleId", k: Int) : PipelineModel ={
+    val labelIndexer = new StringIndexer()
+      .setInputCol(labels)
+      .setOutputCol("label")
+      .fit(ds)
+
+    val colNames = ds.drop(labels).drop(ignoredColumn).columns
+    val assembler = new VectorAssembler()
+      .setInputCols(colNames)
+      .setOutputCol("features")
+
+    val kmeans = new KMeans()
+      .setK(k)
+      .setFeaturesCol("features")
+      .setPredictionCol("Predict")
+
+    val pipeline = new Pipeline().setStages(Array(labelIndexer, assembler, kmeans))
+
+    val model = pipeline.fit(ds)
+    model
+  }
+
+  def predict(model: PipelineModel, ds: DataFrame) : DataFrame ={
+    val predicted = model.transform(ds)
+    predicted
   }
 
   def gmmKTuning(ds: DataFrame, categoricalVars : Array[String], kSet : Seq[Int], maxIteration: Int = 10, nReapeat: Int = 10): scala.collection.Map[Int, Double] = {

@@ -68,8 +68,8 @@ class PCADimReduction (sc: SparkContext, sqlContext: SQLContext) extends Seriali
     println(numberPC)
     _nPC = numberPC
 
-  //val featuresOutput = features.take(numberPC).map{row => Vectors.dense(row)}
- //var df = sqlContext.createDataFrame(featuresOutput.map(Tuple1.apply)).toDF("pcaFeatures")
+    //val featuresOutput = features.take(numberPC).map{row => Vectors.dense(row)}
+    //var df = sqlContext.createDataFrame(featuresOutput.map(Tuple1.apply)).toDF("pcaFeatures")
 
 
 

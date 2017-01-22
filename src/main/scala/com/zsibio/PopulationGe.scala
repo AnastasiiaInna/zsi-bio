@@ -64,6 +64,40 @@ class PopulationGe (sc: SparkContext, sqlContext: SQLContext, genotypes: RDD[Gen
     sortedSampleData
   }
 
+/*  def getDataSet(sortedVariantsBySampleId: RDD[(String, Array[(String, Int)])], prunnedSnpIdSet: List[String] = null) : DataFrame ={
+    val header = StructType(
+      Array(StructField("SampleId", StringType)) ++
+        Array(StructField("Region", StringType)) ++
+        sortedVariantsBySampleId.keys.collect.map(variant => StructField(variant, DoubleType))
+    )
+
+    val variants = sortedVariantsBySampleId.keys.collect
+    val samples = sortedVariantsBySampleId.first._1
+    val alternateCounts = sortedVariantsBySampleId.
+
+    val rowRDD: RDD[Row] = sortedVariantsBySampleId.map {
+      case (variantId, sortedVariants) =>
+        val region: Array[String] = sortedVariants.map{case(sampleId, _) => panel.getOrElse(sampleId, "Unknown")}
+        val alternateCounts: Array[Double] = sortedVariants.map(_._2.toDouble)
+        Row.fromSeq(sortedVariants.map(_._1) ++ region ++ alternateCounts)
+    }
+
+    val dataSet: DataFrame = sqlContext.createDataFrame(rowRDD, header)//.toDF(header.fieldNames : _*)
+    var outputDataSet: DataFrame = null
+
+    if (prunnedSnpIdSet == null) outputDataSet = dataSet
+    else{
+      val columnsToSelect: List[String] = List("SampleId", "Region") ++ prunnedSnpIdSet
+      outputDataSet = dataSet.select(columnsToSelect.head, columnsToSelect.tail: _*)
+    }
+
+    _dataSet = outputDataSet
+    _numberOfRegions = outputDataSet.select("Region").distinct().count().toInt
+
+
+    return outputDataSet
+  }*/
+
   def getDataSet(sortedVariantsBySampleId: RDD[(String, Array[(String, Int)])], prunnedSnpIdSet: List[String] = null) : DataFrame ={
     val header = StructType(
       Array(StructField("SampleId", StringType)) ++

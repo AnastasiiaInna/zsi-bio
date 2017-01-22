@@ -184,6 +184,11 @@ object PopulationStratification {
   def prun(rdd: RDD[(String, Array[(String, Int)])], snpIdSet: List[String]): RDD[(String, Array[(String, Int)])] =
     rdd.map{ case (sample, sortedVariants) => (sample, sortedVariants.filter(varinat => snpIdSet contains (varinat._1)))}
 
+/*
+  def prun(rdd: RDD[(String, Array[(String, Int)])], snpIdSet: List[String]): RDD[(String, Array[(String, Int)])] =
+    rdd.filter{case(variant, _) => snpIdSet contains variant}
+*/
+
   def main(args: Array[String]): Unit = {
 
     val conf = new SparkConf()
@@ -438,9 +443,9 @@ object PopulationStratification {
       // val listGeno = snpIdSet.zip(snpSet).map{case((snpId, snpPos), snp) => toTSNP(snpId, snpPos, snp.toVector)}
       // println(listGeno.collect().toList)
 
-      val bPrunnedSnpIdSet = ldPrun.performLDPruning(listGeno, parameters._ldMethod, parameters._ldTreshold, parameters._ldMaxBp, parameters._ldMaxN)
-      println(bPrunnedSnpIdSet)
-      variantsRDDprunned = prun(variantsRDDprunned, bPrunnedSnpIdSet)
+      val bPrunnedSnpIdSet = sc.broadcast(ldPrun.performLDPruning(listGeno, parameters._ldMethod, parameters._ldTreshold, parameters._ldMaxBp, parameters._ldMaxN))
+      println(bPrunnedSnpIdSet.value)
+      variantsRDDprunned = prun(variantsRDDprunned, bPrunnedSnpIdSet.value)
 
       t1 = System.currentTimeMillis()
       val fsLdTime = time.formatTimeDiff(t0, t1)
@@ -515,7 +520,7 @@ object PopulationStratification {
           println(ds.count(), ds.columns.length)
           var nPC = math.min(ds.count, ds.columns.length - 2).toInt
           nPC = if (nPC > 30) 30 else (nPC - 1)
-          val variantion = 0.5
+          val variantion = 0.7
           ds = pcaDimRed.pcaML(ds, nPC, "Region", variantion, "tempPcaFeatures")
           pcaDimRed.explainedVariance(ds, nPC, varianceTreshold = variantion, "tempPcaFeatures")
           ds = pcaDimRed.pcaML(ds, pcaDimRed._nPC, "Region", variantion, "pcaFeatures")
@@ -569,11 +574,11 @@ object PopulationStratification {
       val clustering = new Clustering(sc, sqlContext)
       val setK : Seq[Int] = Seq(1, 2, 3, 4, 5)
       var k = parameters._popSet.length
-
+      var avgPurity = 0.0
       t0 = System.currentTimeMillis()
 
       parameters._clusterMethod match {
-        case "kmeans" => {
+        case "kmeans_h2o" => {
           val unsupervised = new Unsupervised(sc, sqlContext)
           if (parameters._cvClustering == true){
             val kTuning = unsupervised.kMeansTuning(trainingDS, responseColumn = "Region", ignoredColumns = Array("SampleId"), kSet = setK, nReapeat = parameters._nRepeatClustering)
@@ -581,9 +586,27 @@ object PopulationStratification {
             kTuning.foreach{case(k, purity) => println(s"k = ${k}, purity = ${purity}")}
             k = kTuning.maxBy(_._2)._1
           }
-          val kMeansModel = unsupervised.kMeansH2O(ds, k)
-          trainPrediction = unsupervised.kMeansPredict(kMeansModel, ds)
+          avgPurity = sc.parallelize(0 until parameters._nRepeatClustering).map{ _ =>
+            val kMeansModel = unsupervised.kMeansH2O(ds, k)
+            trainPrediction = unsupervised.kMeansPredict(kMeansModel, ds)
+            clustering.purity(trainPrediction.select("Region", "Predict"))
+          }.sum / parameters._nRepeatClustering
           // testPrediction = unsupervised.kMeansPredict(kMeansModel, testDS)
+        }
+
+        case "kmeans" => {
+          if (parameters._cvClustering == true) {
+            val kTuning = clustering.gmmKTuning(trainingDS, Array("SampleId", "Region"), setK, nReapeat = parameters._nRepeatClustering)
+            println("K estimation: ")
+            kTuning.foreach { case (k, purity) => println(s"k = ${k}, purity = ${purity}") }
+            k = kTuning.maxBy(_._2)._1
+          }
+          avgPurity = sc.parallelize(0 until parameters._nRepeatClustering).map{ _ =>
+            val kmeansModel = clustering.kmeansML(ds, "Region", "SampleId", k)
+            trainPrediction = clustering.predict(kmeansModel, ds)
+            clustering.purity(trainPrediction.select("Region", "Predict"))
+          }.sum / parameters._nRepeatClustering
+          // testPrediction = clustering.predict(gmmModel, testDS, Array("SampleId", "Region"))
         }
 
         case "gmm" => {
@@ -593,8 +616,11 @@ object PopulationStratification {
             kTuning.foreach { case (k, purity) => println(s"k = ${k}, purity = ${purity}") }
             k = kTuning.maxBy(_._2)._1
           }
-          val gmmModel = clustering.gmm(ds, Array("SampleId", "Region"), k)
-          trainPrediction = clustering.predict(gmmModel, ds, Array("SampleId", "Region"))
+          avgPurity = sc.parallelize(0 until parameters._nRepeatClustering).map{ _ =>
+            val gmmModel = clustering.gmm(ds, Array("SampleId", "Region"), k)
+            trainPrediction = clustering.predict(gmmModel, ds, Array("SampleId", "Region"))
+            clustering.purity(trainPrediction.select("Region", "Predict"))
+          }.sum / parameters._nRepeatClustering
           // testPrediction = clustering.predict(gmmModel, testDS, Array("SampleId", "Region"))
         }
 
@@ -605,14 +631,17 @@ object PopulationStratification {
             kTuning.foreach { case (k, purity) => println(s"k = ${k}, purity = ${purity}") }
             k = kTuning.maxBy(_._2)._1
           }
-          val bkmModel = clustering.bkm(ds, Array("SampleId", "Region"), k)
-          trainPrediction = clustering.predict(bkmModel, ds, Array("SampleId", "Region"))
+          avgPurity = sc.parallelize(0 until parameters._nRepeatClustering).map{ _ =>
+            val bkmModel = clustering.bkm(ds, Array("SampleId", "Region"), k)
+            trainPrediction = clustering.predict(bkmModel, ds, Array("SampleId", "Region"))
+            clustering.purity(trainPrediction.select("Region", "Predict"))
+          }.sum / parameters._nRepeatClustering
           // testPrediction = clustering.predict(bkmModel, testDS, Array("SampleId", "Region"))
         }
       }
 
-      var purity = clustering.purity(trainPrediction.select("Region", "Predict"))
-      println($"Purity: ", purity)
+      // var purity = clustering.purity(trainPrediction.select("Region", "Predict"))
+      println($"Purity: ", avgPurity)
       /*      purity = clustering.purity(testPrediction.select("Region", "Predict"))
             println($"Test purity: ", purity)*/
 
@@ -622,7 +651,9 @@ object PopulationStratification {
       timeResult ::= (s"Clustering. ${parameters._clusterMethod} : $clusterTime")
 
       timeResult.foreach(println)
-      trainPrediction.repartition(1).writeToCsv(outputFilename)
+
+      if (outputFilename != "null")
+        trainPrediction.repartition(1).writeToCsv(outputFilename)
     }
 
     /**
@@ -712,7 +743,8 @@ object PopulationStratification {
       testPrediction = classification._prediction
 
       timeResult.foreach(println)
-      testPrediction.repartition(1).writeToCsv(outputFilename)
+      if (outputFilename != "null")
+        testPrediction.repartition(1).writeToCsv(outputFilename)
     }
 
     timeResult.foreach(println)
