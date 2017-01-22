@@ -433,7 +433,7 @@ object PopulationStratification {
         res.iterator
       }
 
-      val nPartitions = 1//4 * nCores//snpSet.getNumPartitions
+      val nPartitions = 4 * nCores//snpSet.getNumPartitions
       val listGeno = snpIdSet.repartition(nPartitions).zipPartitions(snpSet.repartition(nPartitions))(getListGeno)
       // val listGeno = snpIdSet.zip(snpSet).map{case((snpId, snpPos), snp) => toTSNP(snpId, snpPos, snp.toVector)}
       // println(listGeno.collect().toList)
