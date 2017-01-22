@@ -2,7 +2,6 @@ package com.zsibio
 
 /**
   * Created by anastasiia on 10/6/16.
-
   */
 
 import java.io.File
@@ -33,35 +32,35 @@ case class TSNP(snpIdx: Long, snpId: String, snpPos: Int, snp: Vector[Int]){
 case class ClassificationMetrics(error: Double, precisionByLabels: List[Double], recallByLabels: List[Double], fScoreByLabels: List[Double])
 
 class Parameters(
-                     chrFile : String,
-                     panelFile : String,
-                     pop : String,
-                     popSet : Array[String],
-                     missingRate : Double,
-                     isFrequencies : Boolean,
-                     infFreq : Double,
-                     supFreq : Double,
-                     isLDPruning : Boolean,
-                     ldMethod : String,
-                     ldTreshold : Double,
-                     ldMaxBp : Int,
-                     ldMaxN : Int,
-                     isOutliers : Boolean,
-                     isDimRed : Boolean,
-                     dimRedMethod : String,
-                     pcaMethod : String,
-                     mdsMethod : String,
-                     isClustering : Boolean,
-                     isClassification : Boolean,
-                     clusterMethod : String,
-                     classificationMethod : String,
-                     cvClassification : Boolean,
-                     cvClustering : Boolean,
-                     nRepeatClassification : Int,
-                     nRepeatClustering : Int,
-                     chrFreqFile : String,
-                     chrFreqFileOutput : String
-                     ){
+                  chrFile : String,
+                  panelFile : String,
+                  pop : String,
+                  popSet : Array[String],
+                  missingRate : Double,
+                  isFrequencies : Boolean,
+                  infFreq : Double,
+                  supFreq : Double,
+                  isLDPruning : Boolean,
+                  ldMethod : String,
+                  ldTreshold : Double,
+                  ldMaxBp : Int,
+                  ldMaxN : Int,
+                  isOutliers : Boolean,
+                  isDimRed : Boolean,
+                  dimRedMethod : String,
+                  pcaMethod : String,
+                  mdsMethod : String,
+                  isClustering : Boolean,
+                  isClassification : Boolean,
+                  clusterMethod : String,
+                  classificationMethod : String,
+                  cvClassification : Boolean,
+                  cvClustering : Boolean,
+                  nRepeatClassification : Int,
+                  nRepeatClustering : Int,
+                  chrFreqFile : String,
+                  chrFreqFileOutput : String
+                ){
   def this() = this("file:///home/anastasiia/1000genomes/ALL.chrMT.phase3_callmom-v0_4.20130502.genotypes.vcf.adam",
     "file:///home/anastasiia/1000genomes/ALL.panel", "super_pop", Array("AFR", "EUR", "AMR", "EAS", "SAS"),
     0., true, 0.005, 1., true, "compsite", 0.2, 500000, Int.MaxValue, false, true, "PCA", "GramSVD", null,
@@ -188,10 +187,10 @@ object PopulationStratification {
   def main(args: Array[String]): Unit = {
 
     val conf = new SparkConf()
-			.setAppName("PopStrat")
-			.set("spark.ext.h2o.repl.enabled", "false")
-			//.set("spark.ext.h2o.topology.change.listener.enabled", "false")
-			.set("spark.driver.maxResultSize", "0")
+      .setAppName("PopStrat")
+      .set("spark.ext.h2o.repl.enabled", "false")
+      //.set("spark.ext.h2o.topology.change.listener.enabled", "false")
+      .set("spark.driver.maxResultSize", "0")
     val sc = new SparkContext(conf)
     val sqlContext = new SQLContext(sc)
     import sqlContext.implicits._
@@ -225,7 +224,7 @@ object PopulationStratification {
       outputFilename = paramsMap.get("outputFilename").getOrElse(null)
 
       if (paramsMap.get("missing_rate").getOrElse(null).toDouble < 0. || paramsMap.get("inf_freq").getOrElse(null).toDouble < 0. || paramsMap.get("sup_freq").getOrElse(null).toDouble < 0.
-      || paramsMap.get("ld_treshold").getOrElse(null).toDouble < 0. || paramsMap.get("ld_max_bp").getOrElse(null).toInt < 0 || paramsMap.get("ld_max_n").getOrElse(null).toInt < 0){
+        || paramsMap.get("ld_treshold").getOrElse(null).toDouble < 0. || paramsMap.get("ld_max_bp").getOrElse(null).toInt < 0 || paramsMap.get("ld_max_n").getOrElse(null).toInt < 0){
         println ("Some of parameters are negative")
         sys.exit(-1)
       }
@@ -261,8 +260,8 @@ object PopulationStratification {
         paramsMap.get("clustering_method").getOrElse(null), paramsMap.get("classification_method").getOrElse(null),
         paramsMap.get("cv_classification").getOrElse(null).toBoolean, paramsMap.get("cv_clustering").getOrElse(null).toBoolean,
         paramsMap.get("n_reapeat_classification").getOrElse(null).toInt, paramsMap.get("n_reapeat_clustering").getOrElse(null).toInt,
-        paramsMap.get("chr_frequencies_file").getOrElse(null), 
-	paramsMap.get("chr_frequencies_file_output").getOrElse(null)
+        paramsMap.get("chr_frequencies_file").getOrElse(null),
+        paramsMap.get("chr_frequencies_file_output").getOrElse(null)
       )
 
       if (parameters._isFrequencies == false) {
@@ -271,11 +270,11 @@ object PopulationStratification {
       }
     }
 
-/*        val gtsForSample: RDD[Genotype] = sc.loadGenotypes(genotypeFile)
-        val start = 16050000
-        val end   = 16053000
-        val sampledGts = gtsForSample.filter(g => (g.getVariant.getStart >= start && g.getVariant.getEnd <= end) )
-        sampledGts.adamParquetSave("/home/anastasiia/1000genomes/chr22-sample_3000.adam")*/
+    /*        val gtsForSample: RDD[Genotype] = sc.loadGenotypes(genotypeFile)
+            val start = 16050000
+            val end   = 16053000
+            val sampledGts = gtsForSample.filter(g => (g.getVariant.getStart >= start && g.getVariant.getEnd <= end) )
+            sampledGts.adamParquetSave("/home/anastasiia/1000genomes/chr22-sample_3000.adam")*/
 
     def extract(file: String, superPop: String = "super_pop", filter: (String, String) => Boolean) = {
       sc.textFile(file).map(line => {
@@ -306,20 +305,19 @@ object PopulationStratification {
       val variantsNonmissingsDF = sqlContext.sql(
         "select " +
           "concat(variant.contig.contigName, ':', variant.start) as variantId," +
-/*          "variant.contig.contigName," +
-          "variant.start," +
-          "variant.referenceAllele," +
-          "variant.alternateAllele," +*/
+          /*          "variant.contig.contigName," +
+                    "variant.start," +
+                    "variant.referenceAllele," +
+                    "variant.alternateAllele," +*/
           "count(*) as nonmissing " +
-        "from gts " +
-        "group by variant.contig.contigName, variant.start")
+          "from gts " +
+          "group by variant.contig.contigName, variant.start")
 
       val nonMultiallelicDF = sqlContext.sql(
         "select " +
           "concat(variant.contig.contigName, ':', variant.start) as variantId " +
-        "from gts " +
-        "group by sampleId, variant.contig.contigName, variant.start, variant.referenceAllele having count(*)<=1")
-        .distinct()
+          "from gts " +
+          "group by sampleId, variant.contig.contigName, variant.start, variant.referenceAllele having count(*)<=1").distinct()
 
       val variantsFreqDF = sqlContext.sql(
         "select " +
@@ -329,13 +327,11 @@ object PopulationStratification {
           "variant.referenceAllele," +
           "variant.alternateAllele," +
           "sum(case when alleles[0] = alleles[1] then 2 else 1 end) as frequency " +
-        "from gts " +
+          "from gts " +
           "where alleles[0] = 'Alt' or alleles[1] = 'Alt' " +
-        "group by variant.contig.contigName, variant.start, variant.`end`, variant.referenceAllele, variant.alternateAllele")
+          "group by variant.contig.contigName, variant.start, variant.`end`, variant.referenceAllele, variant.alternateAllele")
 
-      variantsDF = variantsNonmissingsDF
-        .join(nonMultiallelicDF, "variantId")
-        .join(variantsFreqDF, "variantId")
+      variantsDF = variantsNonmissingsDF.join(nonMultiallelicDF, "variantId").join(variantsFreqDF, "variantId")
 
       variantsDF.repartition(1).writeToCsv(parameters._chrFreqFileOutput)
 
@@ -349,41 +345,43 @@ object PopulationStratification {
       "select " +
         "sampleId," +
         "concat(variant.contig.contigName, ':', variant.start) as variantId, " +
-     /* "variant.contig.contigName,"+
-        "variant.start,"+
-        "variant.referenceAllele," +
-        "variant.alternateAllele," +*/
-        "count(*) as count " +
-      "from gts " +
-      "group by sampleId, variant.contig.contigName, variant.start")
-      .distinct()
+        /* "variant.contig.contigName,"+
+           "variant.start,"+
+           "variant.referenceAllele," +
+           "variant.alternateAllele," +*/
+        "case when alleles[0] = 'Alt' and alleles[1] = 'Alt' then 2 when alleles[0] = 'Ref' and alleles[1] = 'Ref' then 0 else 1 end as count " +
+        "from gts " +
+        "group by sampleId, variant.contig.contigName, variant.start, alleles").distinct()
 
     val sampleCount = sqlContext.sql(
       "select sampleId from gts group by sampleId")
       .count
 
     println(s"Sample number: $sampleCount")
+    genotypesDF.show(10)
 
     val filteredVariantsDF = sqlContext.sql(
       "select variantId from variants " +
         s"where nonmissing >= $sampleCount * (1 - ${parameters._missingRate}) and " +
-         s"frequency >= ${parameters._infFreq} * $sampleCount and frequency <= ${parameters._supFreq} * $sampleCount"
+        s"frequency >= ${parameters._infFreq} * $sampleCount and frequency <= ${parameters._supFreq} * $sampleCount"
     )
 
     val bFilteredVariantsDF = broadcast(filteredVariantsDF.as("filteredVariants"))
-    val  gtsDF = genotypesDF.as("df").join(broadcast(bFilteredVariantsDF), "variantId")
+    val gtsDF = genotypesDF.as("df").join(broadcast(bFilteredVariantsDF), "variantId").distinct
 
     // val filteredVariantsList : Array[Any] = filteredVariantsDF.select("VariantId").map(_.get(0)).collect
     // variantsDF = variantsDF.groupBy("sampleId").pivot("variantId", filteredVariantsList.toSeq).agg(expr("first(count)").cast("int"))
 
     t0 = System.currentTimeMillis()
-    gtsDF.show(20)
+    gtsDF.show(30)
     t1 = System.currentTimeMillis()
     val fsFreqTime = time.formatTimeDiff(t0, t1)
     println(s"Feature selection. Frequencies: $fsFreqTime")
     timeResult ::= (s"Feature selection. Frequencies: $fsFreqTime")
 
-    val sampleToData : RDD[(String, (String, Int))]= gtsDF.rdd.map({case Row(variantId : String, sampleId: String, count : Long) => (sampleId, (variantId, count.toInt))})//=> (row(0).toString, (row(1).toString, row(2).cast[Int])//asInstanceOf[Int])))
+    //gtsDF.repartition(1).writeToCsv("/home/anastasiia/gts.csv")
+
+    val sampleToData : RDD[(String, (String, Int))]= gtsDF.rdd.map({case Row(variantId : String, sampleId: String, count : Int) => (sampleId, (variantId, count))})//=> (row(0).toString, (row(1).toString, row(2).cast[Int])//asInstanceOf[Int])))
     val groupedSampleData : RDD[(String, Iterable[(String, Int)])] = sampleToData.groupByKey()
     var variantsRDD : RDD[(String, Array[(String, Int)])] = groupedSampleData.mapValues(it => it.toArray.sortBy(_._1)).cache()
 
@@ -397,16 +395,16 @@ object PopulationStratification {
 
     val gts = new PopulationGe(sc, sqlContext, genotypes, panel, parameters._missingRate, parameters._infFreq, parameters._supFreq)
 
-      /**
-        * Variables for prunning data. Used for both ldPruning and Outliers detection cases
-        */
+    /**
+      * Variables for prunning data. Used for both ldPruning and Outliers detection cases
+      */
 
     var variantsRDDprunned: RDD[(String, Array[(String, Int)])] = variantsRDD
     var prunnedSnpIdSet: List[String] = null
 
-      /**
-        *  LDPruning
-        */
+    /**
+      *  LDPruning
+      */
 
     if (parameters._isLDPruning == true) {
       println("LD Pruning")
@@ -435,14 +433,14 @@ object PopulationStratification {
         res.iterator
       }
 
-      val nPartitions = 4 * nCores//snpSet.getNumPartitions
+      val nPartitions = 1//4 * nCores//snpSet.getNumPartitions
       val listGeno = snpIdSet.repartition(nPartitions).zipPartitions(snpSet.repartition(nPartitions))(getListGeno)
       // val listGeno = snpIdSet.zip(snpSet).map{case((snpId, snpPos), snp) => toTSNP(snpId, snpPos, snp.toVector)}
       // println(listGeno.collect().toList)
 
-      val bPrunnedSnpIdSet = sc.broadcast(ldPrun.performLDPruning(listGeno, parameters._ldMethod, parameters._ldTreshold, parameters._ldMaxBp, parameters._ldMaxN))
-      println(prunnedSnpIdSet)
-      variantsRDDprunned = prun(variantsRDDprunned, bPrunnedSnpIdSet.value)
+      val bPrunnedSnpIdSet = ldPrun.performLDPruning(listGeno, parameters._ldMethod, parameters._ldTreshold, parameters._ldMaxBp, parameters._ldMaxN)
+      println(bPrunnedSnpIdSet)
+      variantsRDDprunned = prun(variantsRDDprunned, bPrunnedSnpIdSet)
 
       t1 = System.currentTimeMillis()
       val fsLdTime = time.formatTimeDiff(t0, t1)
@@ -450,9 +448,9 @@ object PopulationStratification {
       timeResult ::= (s"Feature selection. LD Pruning: $fsLdTime")
     }
 
-      /**
-        * Outliers detection
-        */
+    /**
+      * Outliers detection
+      */
 
     if (parameters._isOutliers == true) {
       println("Outliers Detections")
@@ -476,7 +474,6 @@ object PopulationStratification {
       }
       meanVar.iterator
     }
-
     val meanVar : RDD[Array[(Double, Double)]] = subRDDs.mapPartitions(computeMeanVar)*/
 
       val meanVar: RDD[Array[(Double, Double)]] = subRDDs.map { currRDD =>
@@ -495,9 +492,9 @@ object PopulationStratification {
       // println(subRDDs.length, subRDDs(0).count)
     }
 
-      /**
-        * Dimensionality Reduction
-        */
+    /**
+      * Dimensionality Reduction
+      */
 
     if (parameters._isDimRed == true) {
       println("Dimensionality Reduction")
@@ -512,14 +509,18 @@ object PopulationStratification {
 
         case "PCA" =>{
           println(" PCA")
-        //  val unsupervised = new Unsupervised(sc, sqlContext)
+          //  val unsupervised = new Unsupervised(sc, sqlContext)
           val pcaDimRed = new PCADimReduction(sc, sqlContext)
           ds = gts.getDataSet(variantsRDDprunned)
-          ds = pcaDimRed.pcaML(ds, 10, "Region", 0.7, "tempPcaFeatures")
-         // pcaDimRed.explainedVariance(ds, 20, varianceTreshold = 0.7, "tempPcaFeatures")
-         // ds = pcaDimRed.pcaML(ds, pcaDimRed._nPC, "Region", 07, "pcaFeatures")
-         // ds = unsupervised.pcaH2O(ds)
           println(ds.count(), ds.columns.length)
+          var nPC = math.min(ds.count, ds.columns.length - 2).toInt
+          nPC = if (nPC > 30) 30 else (nPC - 1)
+          val variantion = 0.5
+          ds = pcaDimRed.pcaML(ds, nPC, "Region", variantion, "tempPcaFeatures")
+          pcaDimRed.explainedVariance(ds, nPC, varianceTreshold = variantion, "tempPcaFeatures")
+          ds = pcaDimRed.pcaML(ds, pcaDimRed._nPC, "Region", variantion, "pcaFeatures")
+          ds.show(10)
+          // ds = unsupervised.pcaH2O(ds)
         }
         /**
           * MDS
@@ -557,16 +558,16 @@ object PopulationStratification {
     trainingDS = ds //split(0)
     testDS = split(1)
 
-      /**
-        * Clustering
-        */
+    /**
+      * Clustering
+      */
 
     if (parameters._isClustering == true) {
       println("Clustering")
       var trainPrediction: DataFrame = null
       var testPrediction: DataFrame = null
       val clustering = new Clustering(sc, sqlContext)
-      val setK : Seq[Int] = Seq(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+      val setK : Seq[Int] = Seq(1, 2, 3, 4, 5)
       var k = parameters._popSet.length
 
       t0 = System.currentTimeMillis()
@@ -612,14 +613,13 @@ object PopulationStratification {
 
       var purity = clustering.purity(trainPrediction.select("Region", "Predict"))
       println($"Purity: ", purity)
-/*      purity = clustering.purity(testPrediction.select("Region", "Predict"))
-      println($"Test purity: ", purity)*/
+      /*      purity = clustering.purity(testPrediction.select("Region", "Predict"))
+            println($"Test purity: ", purity)*/
 
       t1 = System.currentTimeMillis()
       val clusterTime = time.formatTimeDiff(t0, t1)
       println(s"Clustering. ${parameters._clusterMethod} : $clusterTime")
       timeResult ::= (s"Clustering. ${parameters._clusterMethod} : $clusterTime")
-
 
       timeResult.foreach(println)
       trainPrediction.repartition(1).writeToCsv(outputFilename)
@@ -656,22 +656,22 @@ object PopulationStratification {
             svmModel
           }.toList
 
-//          val dtStage = svmModel.stages(2).asInstanceOf[SVMModel]
-//          println(s"The best  learned classification SVM model: ${dtStage.mloutput}")
+          //          val dtStage = svmModel.stages(2).asInstanceOf[SVMModel]
+          //          println(s"The best  learned classification SVM model: ${dtStage.mloutput}")
         }
 
         case "dt" => {
-	  println("Start dt")
+          println("Start dt")
           pipelineModelsList = trainDfList.map {trainingDf  =>
             val dtModel = classification.decisionTrees(trainingDS,  cv = parameters._cvClassification)//, "Region", 10, Array(1.0))
-            val dtStage = dtModel.stages(2).asInstanceOf[DecisionTreeClassificationModel]
+          val dtStage = dtModel.stages(2).asInstanceOf[DecisionTreeClassificationModel]
             println(s"The best  learned classification tree model: ${dtStage.toDebugString}")
             dtModel
           }.toList
         }
 
         case "rf" => {
-	  println("Start rf")
+          println("Start rf")
           pipelineModelsList = trainDfList.map { trainingDf =>
             val rfModel = classification.randomForest(trainingDS, cv = parameters._cvClassification)
             val dtStage = rfModel.stages(2).asInstanceOf[RandomForestClassificationModel]
@@ -740,12 +740,12 @@ object PopulationStratification {
 
 
 
-        /*var prunnedVariants : RDD[Array[SampleVariant]] = variantsRDD.values
-        if (prunnedSnpIdSet.length > 0 )
-          prunnedVariants = variantsRDD.values.map(variant => variant.filter(prunnedSnpIdSet contains _.variantId))
-    */
+    /*var prunnedVariants : RDD[Array[SampleVariant]] = variantsRDD.values
+    if (prunnedSnpIdSet.length > 0 )
+      prunnedVariants = variantsRDD.values.map(variant => variant.filter(prunnedSnpIdSet contains _.variantId))
+*/
 
-        //    val ds = gts.getDataSet(variantsRDD, prunnedSnpIdSet)
+    //    val ds = gts.getDataSet(variantsRDD, prunnedSnpIdSet)
     //    println(ds.count(), ds.columns.length)
 
 
@@ -797,47 +797,45 @@ object PopulationStratification {
 
 
 
-/*    val byColumnAndRow = rddSnps.zipWithIndex.flatMap {
-      case (row, rowIndex) => row.zipWithIndex.map {
-        case (number, columnIndex) => columnIndex -> (rowIndex, number)
-      }
-    }
-    // Build up the transposed matrix. Group and sort by column index first.
-    val byColumn = byColumnAndRow.groupByKey.sortByKey().values
-    // Then sort by row index.
-    val transposed : RDD[Vector] = byColumn.map {
-      indexedRow => Vectors.dense(indexedRow.toArray.sortBy(_._1).map(_._2).map(x => x.toDouble))
-    }
-
-    val similarMat = new RowMatrix(transposed).columnSimilarities()
-
-    similarMat.entries.first()*/
+    /*    val byColumnAndRow = rddSnps.zipWithIndex.flatMap {
+          case (row, rowIndex) => row.zipWithIndex.map {
+            case (number, columnIndex) => columnIndex -> (rowIndex, number)
+          }
+        }
+        // Build up the transposed matrix. Group and sort by column index first.
+        val byColumn = byColumnAndRow.groupByKey.sortByKey().values
+        // Then sort by row index.
+        val transposed : RDD[Vector] = byColumn.map {
+          indexedRow => Vectors.dense(indexedRow.toArray.sortBy(_._1).map(_._2).map(x => x.toDouble))
+        }
+        val similarMat = new RowMatrix(transposed).columnSimilarities()
+        similarMat.entries.first()*/
 
 
-   // val transposedMatrix : Array[Array[Double]] = transposed.collect.map(row => row.toArray)
+    // val transposedMatrix : Array[Array[Double]] = transposed.collect.map(row => row.toArray)
 
 
 
     //    val assembler = new VectorAssembler()
-//      .setInputCols(ds.drop("SampleId").drop("Region").columns)
-//      .setOutputCol("features")
-//
-//    var df = assembler.transform(ds)
-//    val asDense = udf((v: Vector) => v.toDense)
-//    val vecToSeq = udf((v: Vector) => v.toArray)
-//
-//    df = df.withColumn("features", asDense($"features"))
-//
-//    val scaler = new StandardScaler()
-//      .setInputCol("features")
-//      .setOutputCol("scaledFeatures")
-//      .setWithStd(true)
-//      .setWithMean(true)
-//
-//    var transformedDF =  scaler.fit(df).transform(df)
-//
-//    val snpMatr : RDD[Vector] = transformedDF.select("scaledFeatures").rdd.map(row => Vectors.dense(row.toSeq.toArray.map(x => x.asInstanceOf[Double])))
-//    val mat = new RowMatrix(snpMatr).columnSimilarities().toIndexedRowMatrix()
+    //      .setInputCols(ds.drop("SampleId").drop("Region").columns)
+    //      .setOutputCol("features")
+    //
+    //    var df = assembler.transform(ds)
+    //    val asDense = udf((v: Vector) => v.toDense)
+    //    val vecToSeq = udf((v: Vector) => v.toArray)
+    //
+    //    df = df.withColumn("features", asDense($"features"))
+    //
+    //    val scaler = new StandardScaler()
+    //      .setInputCol("features")
+    //      .setOutputCol("scaledFeatures")
+    //      .setWithStd(true)
+    //      .setWithMean(true)
+    //
+    //    var transformedDF =  scaler.fit(df).transform(df)
+    //
+    //    val snpMatr : RDD[Vector] = transformedDF.select("scaledFeatures").rdd.map(row => Vectors.dense(row.toSeq.toArray.map(x => x.asInstanceOf[Double])))
+    //    val mat = new RowMatrix(snpMatr).columnSimilarities().toIndexedRowMatrix()
 
 
 
@@ -847,12 +845,12 @@ object PopulationStratification {
     // val coord = mds(snpMatr, 2).getCoordinates.toList.map(x => x.toList)
 
 
- //   transformedDF.select("scaledFeatures")show(10)
+    //   transformedDF.select("scaledFeatures")show(10)
 
-//    val pcaDS = unsupervisedModel.pcaH2O(ds)
-//    val kmeansPred = unsupervisedModel.kMeansH2OTrain(pcaDS, populations.size)
-//    kmeansPred.foreach(println)
-//    unsupervisedModel.writecsv(kmeansPred, "/home/anastasiia/IdeaProjects/kmeanspca_super_pop_chr22.csv")
+    //    val pcaDS = unsupervisedModel.pcaH2O(ds)
+    //    val kmeansPred = unsupervisedModel.kMeansH2OTrain(pcaDS, populations.size)
+    //    kmeansPred.foreach(println)
+    //    unsupervisedModel.writecsv(kmeansPred, "/home/anastasiia/IdeaProjects/kmeanspca_super_pop_chr22.csv")
 
 
 
@@ -861,52 +859,51 @@ object PopulationStratification {
 
     // Subpopulations
 
-/*
-    val clusters = inclusive(0, populations.length - 1)
-    val sampleIdInCluster = clusters.map(cluster => kmeansPred.filter(kmeansPred("Predict") === cluster).select("SampleId", "Region", "Predict"))
-    val sampleIdSet = clusters.map(cluster => kmeansPred.filter(kmeansPred("Predict") === cluster).select("SampleId").collect().map(row => row.mkString))
+    /*
+        val clusters = inclusive(0, populations.length - 1)
+        val sampleIdInCluster = clusters.map(cluster => kmeansPred.filter(kmeansPred("Predict") === cluster).select("SampleId", "Region", "Predict"))
+        val sampleIdSet = clusters.map(cluster => kmeansPred.filter(kmeansPred("Predict") === cluster).select("SampleId").collect().map(row => row.mkString))
+    /*    sampleIdSet.foreach(ds => {
+          println("New one")
+          ds.foreach(println)
+        }
+        )*/
 
-/*    sampleIdSet.foreach(ds => {
-      println("New one")
-      ds.foreach(println)
-    }
-    )*/
+        val panelsSubPopulation = sampleIdSet.map(samples => extract(panelFile, "pop", (sampleID: String, pop: String) => samples.contains(sampleID)))
+        val bpanelsSubPopulation = panelsSubPopulation.map(panel => sc.broadcast(panel))
+        val genotypesSubPop = bpanelsSubPopulation.map(panelSubPopulation => genotypes.filter(genotype => panelSubPopulation.value.contains(genotype.getSampleId)))
 
-    val panelsSubPopulation = sampleIdSet.map(samples => extract(panelFile, "pop", (sampleID: String, pop: String) => samples.contains(sampleID)))
-    val bpanelsSubPopulation = panelsSubPopulation.map(panel => sc.broadcast(panel))
-    val genotypesSubPop = bpanelsSubPopulation.map(panelSubPopulation => genotypes.filter(genotype => panelSubPopulation.value.contains(genotype.getSampleId)))
+        val subGts = (genotypesSubPop, panelsSubPopulation).zipped.map{(subPop, panelSubPop) => {
+          var supFreq = 1.0
+          var newPop = new Population(sc, sqlContext, subPop, panelSubPop, 0.05, supFreq)
+          val snpIdSet = ldPrun.performLDPruning(newPop.sortedVariantsBySampelId, "composite", 0.5)
+          val dataSet = newPop.getDataSet(newPop.sortedVariantsBySampelId, snpIdSet)
+          /*      while (dataSet.columns.length == 2){
+                  supFreq += 0.001
+                  newPop = new Population(sc, sqlContext, subPop, panelSubPop, 0.001, supFreq)
+                }*/
+          (newPop, dataSet)}
+        }
 
-    val subGts = (genotypesSubPop, panelsSubPopulation).zipped.map{(subPop, panelSubPop) => {
-      var supFreq = 1.0
-      var newPop = new Population(sc, sqlContext, subPop, panelSubPop, 0.05, supFreq)
-      val snpIdSet = ldPrun.performLDPruning(newPop.sortedVariantsBySampelId, "composite", 0.5)
-      val dataSet = newPop.getDataSet(newPop.sortedVariantsBySampelId, snpIdSet)
-      /*      while (dataSet.columns.length == 2){
-              supFreq += 0.001
-              newPop = new Population(sc, sqlContext, subPop, panelSubPop, 0.001, supFreq)
-            }*/
-      (newPop, dataSet)}
-    }
-
-    val kmeansPredictions = subGts.map { case (pop, ds) =>
-      println("\nNew SubPopulation: \n")
-      // println(genotype.dataSet.foreach(println))
-      val pcaDS = unsupervisedModel.pcaH2O(ds)
-      unsupervisedModel.kMeansH2OTrain(pcaDS, pop._numberOfRegions)
-    }
-    (clusters, kmeansPredictions).zipped.map{(cluster, prediction) => unsupervisedModel.writecsv(prediction, s"/home/anastasiia/IdeaProjects/chr22/kmeanspca_$cluster.csv")}
-*/
-
+        val kmeansPredictions = subGts.map { case (pop, ds) =>
+          println("\nNew SubPopulation: \n")
+          // println(genotype.dataSet.foreach(println))
+          val pcaDS = unsupervisedModel.pcaH2O(ds)
+          unsupervisedModel.kMeansH2OTrain(pcaDS, pop._numberOfRegions)
+        }
+        (clusters, kmeansPredictions).zipped.map{(cluster, prediction) => unsupervisedModel.writecsv(prediction, s"/home/anastasiia/IdeaProjects/chr22/kmeanspca_$cluster.csv")}
+    */
 
 
 
-/*    val snp1 = Vector(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0)
-    val snp2 = Vector(0, 2, 0, 2, 2, 1, 1, 1, 0, 0, 2, 0, 2, 2, 1, 1, 1, 3)
-    println("cor :")
-    println("composite: ",  ldPrun.pairComposite(snp1, snp2))
-    println("corr: ",  ldPrun.pairCorr(snp1, snp2))
-    println("r: ",  ldPrun.pairR(snp1, snp2))
-    println("dprime: ",  ldPrun.pairDPrime(snp1, snp2))*/
+
+    /*    val snp1 = Vector(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0)
+        val snp2 = Vector(0, 2, 0, 2, 2, 1, 1, 1, 0, 0, 2, 0, 2, 2, 1, 1, 1, 3)
+        println("cor :")
+        println("composite: ",  ldPrun.pairComposite(snp1, snp2))
+        println("corr: ",  ldPrun.pairCorr(snp1, snp2))
+        println("r: ",  ldPrun.pairR(snp1, snp2))
+        println("dprime: ",  ldPrun.pairDPrime(snp1, snp2))*/
 
 
 
@@ -920,7 +917,6 @@ object PopulationStratification {
     //println((ds(snpsetId(3)).toString()))
 
     /*    val corr = gts.pairComposite(ds.select(snpsetId(2)).rdd.collect().map(_.getInt(0)).toVector,ds.select(snpsetId(3)).rdd.collect().map(_.getInt(0)).toVector)
-
         var s = ds.select("SampleId", snpsetId(3))
         println(s.columns.length)
         s = s.join(ds.select("SampleId", snpsetId(4)), "SampleId")
@@ -934,7 +930,6 @@ object PopulationStratification {
     val kmeansPred = unsupervisedModel.kMeansH2OTrain(pcaDS, populations.size)
     kmeansPred.foreach(println)
     unsupervisedModel.writecsv(kmeansPred, "/home/anastasiia/IdeaProjects/chr22/kmeanspca_super_pop.csv")
-
     /* println ("One more time")
     val pcaDS1 = unsupervisedModel.pcaH2O(Gts.dataSet)
     println(pcaDS1._key.get())
@@ -986,12 +981,10 @@ object PopulationStratification {
 
     //print(unsupervisedModel.h2oFrame)
     /*import schemaRDD.sqlContext.implicits._
-
     val dataFrame = h2oContext.asH2OFrame(schemaRDD)
     println("Git 6")
     dataFrame.replace(dataFrame.find("Region"), dataFrame.vec("Region").toCategoricalVec()).remove()
     dataFrame.update()
-
     println(dataFrame._key)
     dataFrame.vecs(Array.range(3, dataFrame.numCols())).map(i => i.toNumericVec)*/
 
