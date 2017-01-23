@@ -1,44 +1,45 @@
+/*
 package com.zsibio
 
 import org.apache.spark.SparkContext
 import org.apache.spark.rdd.RDD
+import org.apache.spark.serializer.Serializer
 import org.apache.spark.sql._
 
 import math._
 import scala.util.Random
 import scala.util.control.Breaks._
-import scala.reflect._
-import org.apache.spark.storage._
 
 trait LDPruningMethods{
-  def pairComposite (snp1: Vector[Int], snp2: Vector[Int]): Double
-  def pairR (snp1: Vector[Int], snp2: Vector[Int]): Double
-  def pairDPrime (snp1: Vector[Int], snp2: Vector[Int]): Double
-  def pairCorr (snp1: Vector[Int], snp2: Vector[Int]): Double
-  def performLDPruning(listGeno : RDD[TSNP], method: String, ldThreshold: Double, slideMaxBp: Int, slideMaxN: Int): List[String]
+  def pairComposite (snp1: RDD[Int], snp2: RDD[Int]): Double
+  def pairR (snp1: RDD[Int], snp2: RDD[Int]): Double
+  def pairDPrime (snp1: RDD[Int], snp2: RDD[Int]): Double
+  def pairCorr (snp1: RDD[Int], snp2: RDD[Int]): Double
+ // def performLDPruning(dataSet: DataFrame, method: String, ldThreshold: Double, slideMaxBp: Int, slideMaxN: Int): DataFrame
+  def performLDPruning(snpIdSet: Array[String], snpSet :List[RDD[Int]], method: String, ldThreshold: Double, slideMaxBp: Int, slideMaxN: Int): List[String]
 }
 
 @SerialVersionUID(15L)
 class LDPruning[T] (sc: SparkContext, sqlContext: SQLContext, seq: RDD[Int]) extends Serializable with LDPruningMethods {
 
-  private def packedCond (cond: (Int, Int) => Boolean, op: (Int, Int) => Int): Vector[Int] ={
-    seq.map(s => {
-      var g1: Int = s / 256
-      var g2: Int = s % 256
-      var sum: Int = 0
+    private def packedCond (cond: (Int, Int) => Boolean, op: (Int, Int) => Int): Vector[Int] ={
+      seq.map(s => {
+        var g1: Int = s / 256
+        var g2: Int = s % 256
+        var sum: Int = 0
 
-      var i = 0
-      for (i <- 0 until 4) {
-        val b1: Int = g1 & 0x03
-        val b2: Int = g2 & 0x03
+        var i = 0
+        for (i <- 0 until 4) {
+          val b1: Int = g1 & 0x03
+          val b2: Int = g2 & 0x03
 
-        if (cond(b1, b2)) sum += op(b1, b2)
-        g1 >>= 2
-        g2 >>= 2
-      }
-      sum
-    }).collect().toVector
-  }
+          if (cond(b1, b2)) sum += op(b1, b2)
+          g1 >>= 2
+          g2 >>= 2
+        }
+        sum
+      }).collect().toVector
+    }
 
   private val validNumSNP: Vector[Int] = packedCond((x: Int, y: Int) => (x < 3 && y < 3), (x: Int, Int) => 1)
   // The number of aa in a pair of packed SNPs:
@@ -74,8 +75,8 @@ class LDPruning[T] (sc: SparkContext, sqlContext: SQLContext, seq: RDD[Int]) ext
   private val numDH2: Vector[Int] = packedCond((x: Int, y: Int) => (x < 3 && y < 3), (x: Int, y: Int) => IncArray(x * 3 + y)(4))
 
 
-  def pairComposite (snp1: Vector[Int], snp2: Vector[Int]): Double ={
-    val frequencies = (snp1, snp2).zipped.par.map{case (s1, s2) =>{
+  def pairComposite (snp1: RDD[Int], snp2: RDD[Int]): Double ={
+     val frequencies = snp1.zip(snp2).map{case (s1, s2) =>{
       val g1 = if (0 <= s1 && s1 <= 2) s1 | ~0x03 else 0xFF
       val g2 = if (0 <= s2 && s2 <= 2) s2 | ~0x03 else 0xFF
       val p = (((g1 & 0xFF) << 8) | (g2 & 0xFF))
@@ -83,8 +84,8 @@ class LDPruning[T] (sc: SparkContext, sqlContext: SQLContext, seq: RDD[Int]) ext
       (validNumSNP(p), numSNPaa(p), numSNPaA(p), numSNPAA(p), numSNPaa(q), numSNPaA(q), numSNPAA(q),
         numSNPAABB(p), numSNPaabb(p), numSNPaaBB(p), numSNPAAbb(p))
     }
-    }.map(tup => List(tup._1, tup._2, tup._3, tup._4, tup._5, tup._6, tup._7,
-      tup._8, tup._9, tup._10, tup._11)).toList.transpose.map(vec => vec.sum)
+  }.map(tup => List(tup._1, tup._2, tup._3, tup._4, tup._5, tup._6, tup._7,
+    tup._8, tup._9, tup._10, tup._11)).collect.toList.transpose.map(vec => vec.sum)
 
     val n = frequencies(0); val naa = frequencies(1);  val naA = frequencies(2);
     val nAA = frequencies(3); val nbb = frequencies(4); val nbB = frequencies(5);
@@ -109,8 +110,8 @@ class LDPruning[T] (sc: SparkContext, sqlContext: SQLContext, seq: RDD[Int]) ext
     return Double.NaN
   }
 
-  def pairCorr (snp1: Vector[Int], snp2: Vector[Int]): Double ={
-    val frequencies = (snp1, snp2).zipped.par.map{
+  def pairCorr (snp1: RDD[Int], snp2: RDD[Int]): Double ={
+    val frequencies = snp1.zip(snp2).map{
       case (s1, s2) =>{
         val g1 = if (0 <= s1 && s1 <= 2) s1 | ~0x03 else 0xFF
         val g2 = if (0 <= s2 && s2 <= 2) s2 | ~0x03 else 0xFF
@@ -118,7 +119,8 @@ class LDPruning[T] (sc: SparkContext, sqlContext: SQLContext, seq: RDD[Int]) ext
         val q = (((g2 & 0xFF) << 8) | (g1 & 0xFF))
         (validNumSNP(p), validSNPx(p), validSNPx(q), validSNPx2(p), validSNPx2(q), validSNPxy(p))
       }
-    }.map(tup => List(tup._1, tup._2, tup._3, tup._4, tup._5, tup._6)).toList.transpose.map(vec => vec.sum)
+    }.map(tup => List(tup._1, tup._2, tup._3, tup._4, tup._5, tup._6))
+        .collect.toList.transpose.map(vec => vec.sum)
 
     val n  = frequencies(0); val X  = frequencies(1); val Y  = frequencies(2);
     val XX = frequencies(3); val YY = frequencies(4); val XY = frequencies(5);
@@ -184,15 +186,15 @@ class LDPruning[T] (sc: SparkContext, sqlContext: SQLContext, seq: RDD[Int]) ext
     return proportions
   }
 
-  def pairR (snp1: Vector[Int], snp2: Vector[Int]): Double ={
-    val frequencies = (snp1, snp2).zipped.par.map{
+  def pairR (snp1: RDD[Int], snp2: RDD[Int]): Double ={
+    val frequencies = snp1.zip(snp2).map{
       case (s1, s2) => {
         val g1 = if (0 <= s1 && s1 <= 2) s1 | ~0x03 else 0xFF
         val g2 = if (0 <= s2 && s2 <= 2) s2 | ~0x03 else 0xFF
         val p = (((g1 & 0xFF) << 8) | (g2 & 0xFF))
         (numAA(p), numAB(p), numBA(p), numBB(p), numDH2(p))
       }
-    }.map(tup => List(tup._1, tup._2, tup._3, tup._4, tup._5)).toList.transpose.map(vec => vec.sum)
+    }.map(tup => List(tup._1, tup._2, tup._3, tup._4, tup._5)).collect.toList.transpose.map(vec => vec.sum)
 
     val proportions : Map[String, Double] = this.proportionHaplo(frequencies(0),
       frequencies(1), frequencies(2), frequencies(3), frequencies(4))
@@ -206,15 +208,15 @@ class LDPruning[T] (sc: SparkContext, sqlContext: SQLContext, seq: RDD[Int]) ext
     return (D / sqrt(pA * p_A * pB * p_B))
   }
 
-  def pairDPrime (snp1: Vector[Int], snp2: Vector[Int]): Double ={
-    val frequencies = (snp1, snp2).zipped.par.map{
+  def pairDPrime (snp1: RDD[Int], snp2: RDD[Int]): Double ={
+    val frequencies = snp1.zip(snp2).map{
       case (s1, s2) =>{
         val g1 = if (0 <= s1 && s1 <= 2) s1 | ~0x03 else 0xFF
         val g2 = if (0 <= s2 && s2 <= 2) s2 | ~0x03 else 0xFF
         val p = (((g1 & 0xFF) << 8) | (g2 & 0xFF))
         (numAA(p), numAB(p), numBA(p), numBB(p), numDH2(p))
       }
-    }.map(tup => List(tup._1, tup._2, tup._3, tup._4, tup._5)).toList.transpose.map(vec => vec.sum)
+    }.map(tup => List(tup._1, tup._2, tup._3, tup._4, tup._5)).collect.toList.transpose.map(vec => vec.sum)
 
     val proportions : Map[String, Double] = this.proportionHaplo(frequencies(0),
       frequencies(1), frequencies(2), frequencies(3), frequencies(4))
@@ -229,7 +231,7 @@ class LDPruning[T] (sc: SparkContext, sqlContext: SQLContext, seq: RDD[Int]) ext
     return (D / donominator)
   }
 
-  private def calcLD(method: String, snp1: Vector[Int], snp2: Vector[Int]) : Double = {
+  private def calcLD(method: String, snp1: RDD[Int], snp2: RDD[Int]) : Double = {
     method match {
       case "composite" => return pairComposite(snp1, snp2)
       case "r"         => return pairR(snp1, snp2)
@@ -239,56 +241,163 @@ class LDPruning[T] (sc: SparkContext, sqlContext: SQLContext, seq: RDD[Int]) ext
     return Double.NaN
   }
 
-  implicit class RDDOps[T](rdd: RDD[T]) {
-    def partitionBy(f: T => Boolean): (RDD[T], RDD[T]) = {
-      val passes = rdd.filter(f)
-      val fails = rdd.filter(e => !f(e))
-      (passes, fails)
-    }
-  }
-
-  def performLDPruning(listGeno: RDD[TSNP], method: String = "composite", ldThreshold: Double = 0.2, slideMaxBp: Int = 500000, slideMaxN: Int = Int.MaxValue): List[String] ={
+  /*def performLDPruning(dataSet: DataFrame, method: String, ldThreshold: Double, slideMaxBp: Int, slideMaxN: Int): DataFrame ={
+    val snpsetId = dataSet.columns
     val rnd = new Random
-    val snpNumber: Int= listGeno.count.toInt
-    val startIdx: Int  = rnd.nextInt(snpNumber - 1)
-
-    val (increaseRDD, decreaseRDD) = listGeno.partitionBy(_.snpIdx >= startIdx)
-    val decreaseRDDsorted = decreaseRDD.sortBy(tsnp => tsnp.snpIdx, false)
-    println(increaseRDD.count(), decreaseRDD.count())
-    var outputSNPIdSet = List[TSNP]()
-
-    def ldSearch(iter: Iterator[TSNP]) : Iterator[TSNP] = {
-      var prev = iter.next
-      var listTSNP: List[TSNP] = List(prev)
-      var outputSNPIdSet : List[TSNP] = List(prev)
-      while (iter.hasNext){
-        var validCnt: Int = 0
-        var totalCnt: Int = 0
-        val itCur = iter.next
-
-        listTSNP.foreach {
-          vec => {
-            totalCnt += 1
-            if ((abs(itCur.snpIdx - vec.snpIdx) <= slideMaxN) && (abs(itCur.snpPos - vec.snpPos) <= slideMaxBp)) {
-              if (abs(calcLD(method, itCur.snp, vec.snp)) <= ldThreshold)
-                validCnt += 1
-            }
-            else {
-              validCnt += 1
-              listTSNP = listTSNP.patch(listTSNP.indexOf(vec), Nil, 1)
-            }
-          }
+    val snpNumber: Int = snpsetId.size
+    val startIdx: Int  = rnd.nextInt(snpNumber - 3) + 2
+    var outputDataSet = dataSet.select("SampleId", snpsetId(startIdx))
+    val posStartIdx = snpsetId(startIdx).split(":")(1).toInt
+    println(startIdx)
+    println(posStartIdx)
+    println(outputDataSet.columns.size)
+    // increasing searching: i = i + 1
+    var i: Int = startIdx + 1
+    for (i <- startIdx + 1 until snpNumber){
+      var j: Int = 0
+      var validCnt: Int = 0
+      var totalCnt: Int = 0
+      val snpI = dataSet.select(snpsetId(i)).rdd.map(row => row.toSeq.map(x = > x.asInstanceOf[Int]))//.collect().map(_.getInt(0)).toVector
+      val posI = snpsetId(i).split(":")(1).toInt
+      for (j <- 1 until outputDataSet.columns.size){
+        totalCnt += 1
+        println(totalCnt)
+        val snpJId = outputDataSet.columns(j)
+        val posJ = snpJId.split(":")(1).toInt
+        if ((math.abs(i - j) <= slideMaxN) && (math.abs(posI - posJ) <= slideMaxBp)){
+          val snpJ = outputDataSet.select(snpJId).rdd//.collect().map(_.getInt(0)).toVector
+          if (math.abs(pairComposite(snpI, snpJ)) <= ldThreshold)
+            validCnt += 1
         }
-        if (totalCnt == validCnt) {
-          listTSNP ::= itCur
-          outputSNPIdSet ::= itCur
+        else{
+          validCnt += 1
+          outputDataSet = outputDataSet.drop(outputDataSet.columns(j))
         }
       }
-      outputSNPIdSet.iterator
+      if (totalCnt == validCnt)
+        outputDataSet = outputDataSet.join(dataSet.select("SampleId", snpsetId(i)), "SampleId")
+    }
+    println(outputDataSet.columns.size)
+    println("Increase is ok")
+    // decreasing searching: i = i - 1
+    var outputDataSetDec = outputDataSet
+    val snpSetToDrop = (startIdx + 1 until snpNumber).map{k =>
+      if ((math.abs(k - startIdx) > slideMaxN) || (math.abs(outputDataSetDec.columns(k).split(":")(1).toInt - posStartIdx) > slideMaxBp))
+        snpsetId(k)
+    }.map(snpId => snpId.toString)
+    for(i <- 0 until snpSetToDrop.size)
+      outputDataSetDec = outputDataSet.drop(snpSetToDrop(i))
+    /*    for (i <- startIdx + 1 until snpNumber){
+          if ((math.abs(i - startIdx) > slideMaxN) || (math.abs(snpsetId(i).toInt - outputDataSet.columns(startIdx).toInt) > slideMaxBp))
+            outputDataSetDec = outputDataSetDec.drop(snpsetId(i))
+        }*/
+
+    for (i <- 2 until startIdx){
+      var j: Int = 0
+      var validCnt: Int = 0
+      var totalCnt: Int = 0
+      val snpI = dataSet.select(snpsetId(i)).rdd.collect().map(_.getInt(0)).toVector
+      val posI = snpsetId(i).split(":")(1).toInt
+
+      for (j <- 1 until outputDataSetDec.columns.size){
+        totalCnt += 1
+        val snpJId = outputDataSet.columns(j)
+        val posJ = snpJId.split(":")(1).toInt
+
+        if ((math.abs(i - j) <= slideMaxN) && (math.abs(posI - posJ) <= slideMaxBp)){
+          val snpJ = outputDataSetDec.select(snpJId).rdd.collect().map(_.getInt(0)).toVector
+          if (math.abs(pairComposite(snpI, snpJ)) <= ldThreshold)
+            validCnt += 1
+        }
+        else{
+          validCnt += 1
+          outputDataSetDec = outputDataSetDec.drop(outputDataSetDec.columns(j))
+        }
+      }
+      if (totalCnt == validCnt)
+        outputDataSetDec = outputDataSetDec.join(dataSet.select("SampleId", snpsetId(i)), "SampleId")
+
     }
 
-    outputSNPIdSet = increaseRDD.mapPartitions(ldSearch).collect().toList
-    outputSNPIdSet :::= decreaseRDDsorted.mapPartitions(ldSearch).collect().toList
+    outputDataSet = outputDataSet.join(outputDataSetDec)
+    return  outputDataSet
+  }*/
+
+
+  case class TSNP(snpIdx: Int, snpId: String, snpPos: Int, snp: RDD[Int]){
+    def this(snpIdx: Int, snpId: String, snpPos: Int) = this(snpIdx, snpId, snpPos, null)
+  }
+
+  def performLDPruning(snpIdSet: Array[String], snpSet :List[RDD[Int]], method: String = "composite", ldThreshold: Double = 0.2, slideMaxBp: Int = 500000, slideMaxN: Int = Int.MaxValue): List[String] ={
+    val rnd = new Random
+    val snpNumber: Int = snpIdSet.size
+    val startIdx: Int  = rnd.nextInt(snpNumber - 1)
+    val posStartIdx = snpIdSet(startIdx).split(":")(1).toInt
+
+    var listGeno: List[TSNP] = List(new TSNP(startIdx, snpIdSet(startIdx), posStartIdx, snpSet(startIdx)))
+    var outputSNPIdSet: List[TSNP] = listGeno
+
+    // increasing searching: i = i + 1
+
+    var i: Int = startIdx + 1
+
+    for (i <- startIdx + 1 until snpNumber) {
+      var validCnt: Int = 0
+      var totalCnt: Int = 0
+      val posI = snpIdSet(i).split(":")(1).toInt
+
+      listGeno.foreach{
+        vec =>{
+          totalCnt += 1
+          if ((abs(i - vec.snpIdx) <= slideMaxN) && (abs(posI - vec.snpPos) <= slideMaxBp)) {
+            if (abs(calcLD(method, snpSet(i), vec.snp)) <= ldThreshold)
+              validCnt += 1
+          }
+          else{
+            validCnt += 1
+            listGeno = listGeno.patch(listGeno.indexOf(vec), Nil, 1)
+          }
+        }
+      }
+      if (totalCnt == validCnt) {
+        listGeno ::= new TSNP(i, snpIdSet(i), posI, snpSet(i))
+        outputSNPIdSet ::= new TSNP(i, snpIdSet(i), posI, snpSet(i))
+      }
+    }
+
+    // decreasing searching: i = i - 1
+
+    listGeno = Nil
+    outputSNPIdSet.foreach{
+      snp => {
+        if ((abs(snp.snpIdx - startIdx) <= slideMaxN) && (abs(snp.snpPos - posStartIdx)) <= slideMaxBp)
+          listGeno ::= snp
+      }
+    }
+
+    for (i <- 0 until startIdx) {
+      var validCnt: Int = 0
+      var totalCnt: Int = 0
+      val posI = snpIdSet(i).split(":")(1).toInt
+
+      listGeno.foreach{
+        vec =>{
+          totalCnt += 1
+          if ((abs(i - vec.snpIdx) <= slideMaxN) && (abs(posI - vec.snpPos) <= slideMaxBp)) {
+            if (abs(calcLD(method, snpSet(i), vec.snp)) <= ldThreshold)
+              validCnt += 1
+          }
+          else{
+            validCnt += 1
+            listGeno = listGeno.patch(listGeno.indexOf(vec), Nil, 1)
+          }
+        }
+      }
+      if (totalCnt == validCnt) {
+        listGeno ::= new TSNP(i, snpIdSet(i), posI, snpSet(i))
+        outputSNPIdSet ::= new TSNP(i, snpIdSet(i), posI, snpSet(i))
+      }
+    }
 
     val snpIdSetPrunned : List[String] = outputSNPIdSet.map(snp => snp.snpId)
 
@@ -299,3 +408,9 @@ class LDPruning[T] (sc: SparkContext, sqlContext: SQLContext, seq: RDD[Int]) ext
 object LDPruning {
   def apply[T](sc: SparkContext, sqlContext: SQLContext, seq: RDD[Int]): LDPruning[T] = new LDPruning[T](sc, sqlContext, seq)
 }
+
+    Contact GitHub API Training Shop Blog About 
+
+    © 2016 GitHub, Inc. Terms Privacy Security Status Help 
+
+*/

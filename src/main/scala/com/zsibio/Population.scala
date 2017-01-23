@@ -5,7 +5,6 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.sql._
 import org.apache.spark.sql.types._
 import org.bdgenomics.formats.avro.{Genotype, GenotypeAllele}
-
 import scala.collection.JavaConverters._
 
 case class SampleVariant(sampleId: String, variantId: String, alternateCount: Int)

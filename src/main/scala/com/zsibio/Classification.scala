@@ -5,7 +5,7 @@ package com.zsibio
   */
 
 import org.apache.spark.SparkContext
-import org.apache.spark.sql.{DataFrame, SQLContext}
+import org.apache.spark.sql.{DataFrame, Row, SQLContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.mllib.linalg.{Vector, Vectors}
 import org.apache.spark.ml.feature._
@@ -187,8 +187,8 @@ class Classification (sc: SparkContext, sqlContext: SQLContext) extends Serializ
   }
 
   def getMetrics(ds: DataFrame) : Unit ={
-    val prediction = ds.select("prediction").rdd.map(row => row.getAs[Double]("prediction"))
-    val trueLabels = ds.select("label").rdd.map(row => row.getAs[Double]("label"))
+    val prediction = ds.select("prediction").rdd.map({case Row(pred: Double) => pred})//map(row => row.getAs[Double]("prediction"))
+    val trueLabels = ds.select("label").rdd.map({case Row(lab: Double) => lab})//map(row => row.getAs[Double]("label"))
     val predictionAndLabels = prediction.zip(trueLabels)
     val metrics = new MulticlassMetrics(predictionAndLabels)
 

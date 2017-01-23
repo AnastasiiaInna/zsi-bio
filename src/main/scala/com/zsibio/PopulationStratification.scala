@@ -601,7 +601,7 @@ object PopulationStratification {
             kTuning.foreach { case (k, purity) => println(s"k = ${k}, purity = ${purity}") }
             k = kTuning.maxBy(_._2)._1
           }
-          avgPurity = sc.parallelize(0 until parameters._nRepeatClustering).map{ _ =>
+          avgPurity = (0 until parameters._nRepeatClustering).par.map{ _ =>
             val kmeansModel = clustering.kmeansML(ds, "Region", "SampleId", k)
             trainPrediction = clustering.predict(kmeansModel, ds)
             clustering.purity(trainPrediction.select("Region", "Predict"))
@@ -616,7 +616,7 @@ object PopulationStratification {
             kTuning.foreach { case (k, purity) => println(s"k = ${k}, purity = ${purity}") }
             k = kTuning.maxBy(_._2)._1
           }
-          avgPurity = sc.parallelize(0 until parameters._nRepeatClustering).map{ _ =>
+          avgPurity = (0 until parameters._nRepeatClustering).par.map{ _ =>
             val gmmModel = clustering.gmm(ds, Array("SampleId", "Region"), k)
             trainPrediction = clustering.predict(gmmModel, ds, Array("SampleId", "Region"))
             clustering.purity(trainPrediction.select("Region", "Predict"))
@@ -631,7 +631,7 @@ object PopulationStratification {
             kTuning.foreach { case (k, purity) => println(s"k = ${k}, purity = ${purity}") }
             k = kTuning.maxBy(_._2)._1
           }
-          avgPurity = sc.parallelize(0 until parameters._nRepeatClustering).map{ _ =>
+          avgPurity = (0 until parameters._nRepeatClustering).par.map{ _ =>
             val bkmModel = clustering.bkm(ds, Array("SampleId", "Region"), k)
             trainPrediction = clustering.predict(bkmModel, ds, Array("SampleId", "Region"))
             clustering.purity(trainPrediction.select("Region", "Predict"))
@@ -641,7 +641,7 @@ object PopulationStratification {
       }
 
       // var purity = clustering.purity(trainPrediction.select("Region", "Predict"))
-      println($"Purity: ", avgPurity)
+      println($"Average purity: ", avgPurity)
       /*      purity = clustering.purity(testPrediction.select("Region", "Predict"))
             println($"Test purity: ", purity)*/
 
@@ -653,7 +653,7 @@ object PopulationStratification {
       timeResult.foreach(println)
 
       if (outputFilename != "null")
-        trainPrediction.repartition(1).writeToCsv(outputFilename)
+        trainPrediction.select("SampleId", "Region", "Predict", "label", "features").repartition(1).writeToCsv(outputFilename)
     }
 
     /**
