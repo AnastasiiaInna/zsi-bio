@@ -9,25 +9,20 @@ import java.io.File
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.ml.PipelineModel
 import org.apache.spark.ml.classification.{DecisionTreeClassificationModel, RandomForestClassificationModel}
+import org.apache.spark.sql.types._
 import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.rdd.RDD
-import org.bdgenomics.adam.rdd.ADAMContext
 import org.bdgenomics.adam.rdd.ADAMContext._
 import org.bdgenomics.formats.avro._
 import org.apache.spark.sql.{DataFrame, Row, SQLContext}
 import org.apache.spark.sql.functions._
-import org.apache.spark.mllib.evaluation.MulticlassMetrics
-import org.apache.spark.mllib.regression.LabeledPoint
-import org.apache.sysml.api.ml.SVMModel
-import smile.classification.RandomForest
 
 import scala.util.Random
-import scala.io.Source
 import scala.collection.JavaConverters._
+import scala.collection.mutable.WrappedArray
 
-case class TSNP(snpIdx: Long, snpId: String, snpPos: Int, snp: Vector[Int]){
-  def this(snpIdx: Long, snpId: String, snpPos: Int) = this(snpIdx, snpId, snpPos, null)
-}
+case class Genotypes(sampleId: String, genotype: Int)
+case class TSNP(snpIdx: Long, snpId: String, snpPos: Int, snp: Vector[Int]){}
 
 case class ClassificationMetrics(error: Double, precisionByLabels: List[Double], recallByLabels: List[Double], fScoreByLabels: List[Double])
 
@@ -303,93 +298,96 @@ object PopulationStratification {
       bpanel.value.contains(genotype.getSampleId)
     })
 
-    val df = sqlContext.read.parquet(parameters._chrFile)
-    df.registerTempTable("gts")
-
     if (parameters._chrFreqFile == "null") {
-      val variantsNonmissingsDF = sqlContext.sql(
-        "select " +
-          "concat(variant.contig.contigName, ':', variant.start) as variantId," +
-          /*          "variant.contig.contigName," +
-                    "variant.start," +
-                    "variant.referenceAllele," +
-                    "variant.alternateAllele," +*/
-          "count(*) as nonmissing " +
-          "from gts " +
-          "group by variant.contig.contigName, variant.start")
+      val df = sqlContext.read.parquet(parameters._chrFile)
+      df.registerTempTable("gts")
 
-      val nonMultiallelicDF = sqlContext.sql(
-        "select " +
-          "concat(variant.contig.contigName, ':', variant.start) as variantId " +
-          "from gts " +
-          "group by sampleId, variant.contig.contigName, variant.start, variant.referenceAllele having count(*)<=1").distinct()
+      val makeGenotypes = udf((sampleId: String, genotype: WrappedArray[String]) =>
+        Genotypes(sampleId, {if(genotype(0) == "Alt" && genotype(1) == "Alt") 2 else if (genotype(0) == "Alt" || genotype(1)== "Alt")  1 else 0} ) )
 
-      val variantsFreqDF = sqlContext.sql(
-        "select " +
-          "concat(variant.contig.contigName, ':', variant.start) as variantId," +
-          "variant.contig.contigName," +
-          "variant.start," +
-          "variant.referenceAllele," +
-          "variant.alternateAllele," +
-          "sum(case when alleles[0] = alleles[1] then 2 else 1 end) as frequency " +
-          "from gts " +
-          "where alleles[0] = 'Alt' or alleles[1] = 'Alt' " +
-          "group by variant.contig.contigName, variant.start, variant.`end`, variant.referenceAllele, variant.alternateAllele")
+      val df3 = df.withColumn("genotypes", makeGenotypes(col("sampleId"), col("alleles")))
+      df3.registerTempTable("gts")
+      val sampleCnt =  sqlContext.sql("select count (distinct sampleId) from gts").first.getLong(0).toInt
+      val df4 = sqlContext.sql(s"""
+        select
+          variant.contig.contigName,
+          variant.start,
+          count(*) as nonmissing,
+          variant.referenceAllele as ref,
+          variant.alternateAllele as alt,
+          sum(case when alleles[0] = 'Alt' and alleles[1] = 'Alt' then 2 when alleles[0] = 'Alt' or alleles[1] = 'Alt' then 1  else 0 end) / ${sampleCnt} as frequency,
+          collect_set( concat(genotypes.sampleId,":",cast(genotypes.genotype as string) ))
+        from gts
+          where
+            length(variant.alternateAllele) = 1 and length(variant.referenceAllele) = 1
+        group by variant.contig.contigName, variant.start, variant.referenceAllele,variant.alternateAllele
+          having count(distinct variant.alternateAllele)  = 1  and count(*) = ${sampleCnt}
+      """)
 
-      variantsDF = variantsNonmissingsDF.join(nonMultiallelicDF, "variantId").join(variantsFreqDF, "variantId")
+      val schema = df4.schema
+      val rows = df4.rdd.zipWithUniqueId().map{case (r: Row, id: Long) => Row.fromSeq(id +: r.toSeq)}
+      val variantsDF = sqlContext.createDataFrame(rows, StructType(StructField("snpIdx", LongType, false) +: schema.fields))
 
-      variantsDF.repartition(1).writeToCsv(parameters._chrFreqFileOutput)
-
+      variantsDF.write
+        .format("com.databricks.spark.csv")
+        .option("header", "true")
+        .save(parameters._chrFreqFile)
     }
     else
       variantsDF = sqlContext.read.format("com.databricks.spark.csv").option("header", "true").option("inferSchema", "true").load(parameters._chrFreqFile)
 
     variantsDF.registerTempTable("variants")
 
-    var genotypesDF = sqlContext.sql(
-      "select " +
-        "sampleId," +
-        "concat(variant.contig.contigName, ':', variant.start) as variantId, " +
-        /* "variant.contig.contigName,"+
-           "variant.start,"+
-           "variant.referenceAllele," +
-           "variant.alternateAllele," +*/
-        "case when alleles[0] = 'Alt' and alleles[1] = 'Alt' then 2 when alleles[0] = 'Ref' and alleles[1] = 'Ref' then 0 else 1 end as count " +
-        "from gts " +
-        "group by sampleId, variant.contig.contigName, variant.start, alleles").distinct()
-
-    val sampleCount = sqlContext.sql(
-      "select sampleId from gts group by sampleId")
-      .count
-
-    println(s"Sample number: $sampleCount")
-    genotypesDF.show(10)
-
-    val filteredVariantsDF = sqlContext.sql(
-      "select variantId from variants " +
-        s"where nonmissing >= $sampleCount * (1 - ${parameters._missingRate}) and " +
-        s"frequency >= ${parameters._infFreq} * $sampleCount and frequency <= ${parameters._supFreq} * $sampleCount"
+    val filteredDF = sqlContext.sql(
+      s"""
+          select * from variants
+            where nonmissing <= ${parameters._missingRate} and
+              frequency >= ${parameters._infFreq} and frequency <= ${parameters._supFreq}
+      """
     )
 
-    val bFilteredVariantsDF = broadcast(filteredVariantsDF.as("filteredVariants"))
-    val gtsDF = genotypesDF.as("df").join(broadcast(bFilteredVariantsDF), "variantId").distinct
-
-    // val filteredVariantsList : Array[Any] = filteredVariantsDF.select("VariantId").map(_.get(0)).collect
-    // variantsDF = variantsDF.groupBy("sampleId").pivot("variantId", filteredVariantsList.toSeq).agg(expr("first(count)").cast("int"))
-
     t0 = System.currentTimeMillis()
-    gtsDF.show(30)
+    filteredDF.show(20)
     t1 = System.currentTimeMillis()
     val fsFreqTime = time.formatTimeDiff(t0, t1)
     println(s"Feature selection. Frequencies: $fsFreqTime")
     timeResult ::= (s"Feature selection. Frequencies: $fsFreqTime")
 
-    //gtsDF.repartition(1).writeToCsv("/home/anastasiia/gts.csv")
+    val dfForLdPrun = filteredDF.map {r => TSNP(r.getLong(0),s"${r.getString(1)}:${r.getLong(2).toString}",r.getLong(2).toInt,r.getAs[WrappedArray[String]](7).map(_.split(':')).map(r=>(r(0),r(1) )).sortBy(r=>r._1).map(_._2.toInt ).toArray.toVector )  }
+    val variantsRDD: RDD[(String, Array[(String, Int)])] = filteredDF.map {r => (s"${r.getString(1)}:${r.getLong(2).toString}", r.getAs[WrappedArray[String]](7).map(_.split(':')).map(r => (r(0), r(1).toInt )).sortBy(r => r._1).toArray)}
+    /*
+      varinatsRDD: [variantId, Array[(SampleId, altCnt)]], where altCnt in {0, 1, 2}
+     */
 
-    val sampleToData : RDD[(String, (String, Int))]= gtsDF.rdd.map({case Row(variantId : String, sampleId: String, count : Int) => (sampleId, (variantId, count))})//=> (row(0).toString, (row(1).toString, row(2).cast[Int])//asInstanceOf[Int])))
+    // val variantsRDD2: RDD[(String, String, Int)] = variantsRDD.map{case(variantId, arr) => (variantId, arr.map{case(sampleId, variantId) => (sampleId, variantId)})}
+    val altCntRDD : RDD[Seq[Int]] = variantsRDD.map(_._2.map(_._2).toSeq)
+    val altCntRDDtransposed = altCntRDD.transpose
+
+    val header = StructType(
+      Array(StructField("SampleId", StringType)) ++ Array(StructField("Region", StringType)) ++ variantsRDD.keys.collect.map(variant => {StructField(variant, IntegerType)})
+    )
+
+/*    val rowRDD: RDD[Row] = variantsRDD.zip(altCntRDDtransposed).map {
+      case (variantId, samples) =>
+        val region: Array[String] = samples.map{sample => panel.getOrElse(sample._1, "Unknown")}
+        val alternateCounts: Array[Double] = samples.map(_._2.toDouble)
+        Row.fromSeq(samples.map(_._1) ++ region ++ alternateCounts)
+    }*/
+
+    val rowRDD: RDD[Row] = variantsRDD.zip(altCntRDDtransposed).map {
+      case (variants, altCnt) =>
+        val region: Array[String] = variants._2.map { sample => panel.getOrElse(sample._1, "Unknown") }
+        val alternateCounts: Array[Int] = altCnt.toArray
+        Row.fromSeq(variants._2.map(_._1) ++ region ++ alternateCounts)
+    }
+
+    ds = sqlContext.createDataFrame(rowRDD, header)
+
+
+    /*val sampleToData : RDD[(String, (String, Int))]= gtsDF.rdd.map({case Row(variantId : String, sampleId: String, count : Int) => (sampleId, (variantId, count))})//=> (row(0).toString, (row(1).toString, row(2).cast[Int])//asInstanceOf[Int])))
     val groupedSampleData : RDD[(String, Iterable[(String, Int)])] = sampleToData.groupByKey()
     var variantsRDD : RDD[(String, Array[(String, Int)])] = groupedSampleData.mapValues(it => it.toArray.sortBy(_._1)).cache()
-
+    */
 
     t0 = System.currentTimeMillis()
     println(s"Variants number: ${variantsRDD.count}")
@@ -443,9 +441,9 @@ object PopulationStratification {
       // val listGeno = snpIdSet.zip(snpSet).map{case((snpId, snpPos), snp) => toTSNP(snpId, snpPos, snp.toVector)}
       // println(listGeno.collect().toList)
 
-      val bPrunnedSnpIdSet = sc.broadcast(ldPrun.performLDPruning(listGeno, parameters._ldMethod, parameters._ldTreshold, parameters._ldMaxBp, parameters._ldMaxN))
-      println(bPrunnedSnpIdSet.value)
-      variantsRDDprunned = prun(variantsRDDprunned, bPrunnedSnpIdSet.value)
+      val prunnedSnpIdSet = ldPrun.performLDPruning(listGeno, parameters._ldMethod, parameters._ldTreshold, parameters._ldMaxBp, parameters._ldMaxN)
+      variantsRDDprunned = prun(variantsRDDprunned, prunnedSnpIdSet)
+      ds = gts.getDataSet(variantsRDDprunned)
 
       t1 = System.currentTimeMillis()
       val fsLdTime = time.formatTimeDiff(t0, t1)
@@ -494,6 +492,7 @@ object PopulationStratification {
       meanVar.foreach(x => println(x.toList))
 
       variantsRDDprunned = prun(variantsRDDprunned, prunnedSnpIdSet)
+      ds = gts.getDataSet(variantsRDDprunned)
       // println(subRDDs.length, subRDDs(0).count)
     }
 
@@ -516,14 +515,11 @@ object PopulationStratification {
           println(" PCA")
           //  val unsupervised = new Unsupervised(sc, sqlContext)
           val pcaDimRed = new PCADimReduction(sc, sqlContext)
-          ds = gts.getDataSet(variantsRDDprunned)
           println(ds.count(), ds.columns.length)
           var nPC = math.min(ds.count, ds.columns.length - 2).toInt
           nPC = if (nPC > 30) 30 else (nPC - 1)
           val variantion = 0.7
-          ds = pcaDimRed.pcaML(ds, nPC, "Region", variantion, "tempPcaFeatures")
-          pcaDimRed.explainedVariance(ds, nPC, varianceTreshold = variantion, "tempPcaFeatures")
-          ds = pcaDimRed.pcaML(ds, pcaDimRed._nPC, "Region", variantion, "pcaFeatures")
+          ds = pcaDimRed.pcaML(ds, nPC, "Region", variantion, "pcaFeatures")
           ds.show(10)
           // ds = unsupervised.pcaH2O(ds)
         }
