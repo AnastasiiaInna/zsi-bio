@@ -15,7 +15,7 @@ lazy val hadoopVersion = Properties.envOrElse("SPARK_HADOOP_VERSION", DEFAULT_HA
 libraryDependencies ++= Seq(
   "org.scalatest" % "scalatest_2.10" % "3.0.0-M15" % "test",
   "org.apache.spark" % "spark-core_2.10" % sparkVersion % "provided",
-  "org.apache.spark" % "spark-sql_2.10" % sparkVersion,
+//  "org.apache.spark" % "spark-sql_2.10" % sparkVersion,
   "org.apache.hadoop" % "hadoop-client" % hadoopVersion % "provided",
   "org.bdgenomics.adam" % "adam-core" % "0.16.0"
     exclude("org.apache.spark", "spark-core_2.10")
@@ -38,7 +38,8 @@ libraryDependencies ++= Seq(
   "com.databricks" % "spark-csv_2.10" % "1.5.0" % "provided",
   "com.databricks" % "spark-csv_2.10" % "1.5.0",
   "com.github.haifengl" % "smile-core" % "1.2.0",
-  "com.github.karlhigley" %% "spark-neighbors" % "0.2.2"
+  "com.github.karlhigley" %% "spark-neighbors" % "0.2.2",
+  "org.apache.spark" %% "spark-hive" % "1.5.0"
   // "org.ddahl" % "rscala_2.11" % "1.0.13"
 
 )
@@ -89,6 +90,8 @@ assemblyMergeStrategy in assembly := {
   case PathList(ps@_*) if ps.last endsWith ".html" => MergeStrategy.first
   case "application.conf" => MergeStrategy.concat
   case PathList("org", "apache", "hadoop", xs@_*) => MergeStrategy.first
+  case PathList("META-INF", xs @ _*) => MergeStrategy.discard
+  case x => MergeStrategy.first
   //case "META-INF/ECLIPSEF.RSA"     => MergeStrategy.discard
   case "META-INF/mimetypes.default" => MergeStrategy.first
   case ("META-INF/ECLIPSEF.RSA") => MergeStrategy.first

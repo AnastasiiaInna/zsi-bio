@@ -16,6 +16,7 @@ import org.bdgenomics.adam.rdd.ADAMContext._
 import org.bdgenomics.formats.avro._
 import org.apache.spark.sql.{DataFrame, Row, SQLContext}
 import org.apache.spark.sql.functions._
+import org.apache.spark.sql.hive.HiveContext
 
 import scala.util.Random
 import scala.collection.JavaConverters._
@@ -192,7 +193,8 @@ object PopulationStratification {
       //.set("spark.ext.h2o.topology.change.listener.enabled", "false")
       .set("spark.driver.maxResultSize", "0")
     val sc = new SparkContext(conf)
-    val sqlContext = new SQLContext(sc)
+   // val sqlContext = new SQLContext(sc)
+    val sqlContext: SQLContext = new HiveContext(sc) 
     import sqlContext.implicits._
 
     val time = new Time()
@@ -321,13 +323,13 @@ object PopulationStratification {
           where
             length(variant.alternateAllele) = 1 and length(variant.referenceAllele) = 1
         group by variant.contig.contigName, variant.start, variant.referenceAllele,variant.alternateAllele
-          having count(distinct variant.alternateAllele)  = 1  and count(*) = ${sampleCnt}
+          having count(*) = ${sampleCnt}
       """)
 
       val schema = df4.schema
       val rows = df4.rdd.zipWithUniqueId().map{case (r: Row, id: Long) => Row.fromSeq(id +: r.toSeq)}
-      val variantsDF = sqlContext.createDataFrame(rows, StructType(StructField("snpIdx", LongType, false) +: schema.fields))
-
+      variantsDF = sqlContext.createDataFrame(rows, StructType(StructField("snpIdx", LongType, false) +: schema.fields))
+      variantsDF.show(10)
       variantsDF.write
         .format("com.databricks.spark.csv")
         .option("header", "true")
@@ -341,8 +343,7 @@ object PopulationStratification {
     val filteredDF = sqlContext.sql(
       s"""
           select * from variants
-            where nonmissing <= ${parameters._missingRate} and
-              frequency >= ${parameters._infFreq} and frequency <= ${parameters._supFreq}
+            where frequency >= ${parameters._infFreq} and frequency <= ${parameters._supFreq}
       """
     )
 
@@ -353,7 +354,7 @@ object PopulationStratification {
     println(s"Feature selection. Frequencies: $fsFreqTime")
     timeResult ::= (s"Feature selection. Frequencies: $fsFreqTime")
 
-    val dfForLdPrun = filteredDF.map {r => TSNP(r.getLong(0),s"${r.getString(1)}:${r.getLong(2).toString}",r.getLong(2).toInt,r.getAs[WrappedArray[String]](7).map(_.split(':')).map(r=>(r(0),r(1) )).sortBy(r=>r._1).map(_._2.toInt ).toArray.toVector )  }
+//    val dfForLdPrun = filteredDF.map {r => TSNP(r.getLong(0),s"${r.getString(1)}:${r.getLong(2).toString}",r.getLong(2).toInt,r.getAs[WrappedArray[String]](7).map(_.split(':')).map(r=>(r(0),r(1) )).sortBy(r=>r._1).map(_._2.toInt ).toArray.toVector )  }
     val variantsRDD: RDD[(String, Array[(String, Int)])] = filteredDF.map {r => (s"${r.getString(1)}:${r.getLong(2).toString}", r.getAs[WrappedArray[String]](7).map(_.split(':')).map(r => (r(0), r(1).toInt )).sortBy(r => r._1).toArray)}
     /*
       varinatsRDD: [variantId, Array[(SampleId, altCnt)]], where altCnt in {0, 1, 2}
