@@ -290,13 +290,13 @@ object PopulationStratification {
 
 
     val panel = extract(parameters._panelFile, parameters._pop, (sampleID: String, pop: String) => parameters._popSet.contains(pop))
-    val bpanel = sc.broadcast(panel)
+    /*val bpanel = sc.broadcast(panel)
 
     val allGenotypes: RDD[Genotype] = sc.loadGenotypes(parameters._chrFile)
 
     val genotypes: RDD[Genotype] = allGenotypes.filter(genotype => {
       bpanel.value.contains(genotype.getSampleId)
-    })
+    })*/
 
     if (parameters._chrFreqFile == "null") {
       val df = sqlContext.read.parquet(parameters._chrFile)
@@ -331,7 +331,7 @@ object PopulationStratification {
       variantsDF.write
         .format("com.databricks.spark.csv")
         .option("header", "true")
-        .save(parameters._chrFreqFile)
+        .save(parameters._chrFreqFileOutput)
     }
     else
       variantsDF = sqlContext.read.format("com.databricks.spark.csv").option("header", "true").option("inferSchema", "true").load(parameters._chrFreqFile)
@@ -396,7 +396,7 @@ object PopulationStratification {
     println(s"DF -> RDD: $dfRDDtransformTime")
     timeResult ::= (s"DF -> RDD: $dfRDDtransformTime")
 
-    val gts = new PopulationGe(sc, sqlContext, genotypes, panel, parameters._missingRate, parameters._infFreq, parameters._supFreq)
+    val gts = new PopulationGe(sc, sqlContext, null, panel, parameters._missingRate, parameters._infFreq, parameters._supFreq)
 
     /**
       * Variables for prunning data. Used for both ldPruning and Outliers detection cases
