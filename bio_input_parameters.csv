@@ -26,5 +26,10 @@ classification,TRUE
 classification_method,svm
 cv_classification,TRUE
 n_reapeat_classification,2
+<<<<<<< Updated upstream
 chr_frequencies_file,null
 chr_frequencies_file_output,hdfs:///popgen/chr22.parquet
+=======
+chr_frequencies_file,hdfs:///popgen/variants_frequencies.csv
+chr_frequencies_file_output,hdfs:///popgen/variants_frequencies.csv
+>>>>>>> Stashed changes
