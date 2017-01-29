@@ -22,7 +22,7 @@ import scala.util.Random
 import scala.collection.JavaConverters._
 import scala.collection.mutable.WrappedArray
 
-case class Genotypes(sampleId: String, genotype: Int)
+case class Genotypes(id: String, genotype: Int)
 case class TSNP(snpIdx: Long, snpId: String, snpPos: Int, snp: Vector[Int]){}
 
 case class ClassificationMetrics(error: Double, precisionByLabels: List[Double], recallByLabels: List[Double], fScoreByLabels: List[Double])
@@ -304,8 +304,8 @@ object PopulationStratification {
       val df = sqlContext.read.parquet(parameters._chrFile)
       df.registerTempTable("gts")
 
-      val makeGenotypes = udf((sampleId: String, genotype: WrappedArray[String]) =>
-        Genotypes(sampleId, {if(genotype(0) == "Alt" && genotype(1) == "Alt") 2 else if (genotype(0) == "Alt" || genotype(1)== "Alt")  1 else 0} ) )
+      val makeGenotypes = udf((id: String, genotype: WrappedArray[String]) =>
+        Genotypes(id, {if(genotype(0) == "Alt" && genotype(1) == "Alt") 2 else if (genotype(0) == "Alt" || genotype(1)== "Alt")  1 else 0} ) )
 
       val df3 = df.withColumn("genotypes", makeGenotypes(col("sampleId"), col("alleles")))
       df3.registerTempTable("gts")
@@ -318,12 +318,11 @@ object PopulationStratification {
           variant.referenceAllele as ref,
           variant.alternateAllele as alt,
           sum(case when alleles[0] = 'Alt' and alleles[1] = 'Alt' then 2 when alleles[0] = 'Alt' or alleles[1] = 'Alt' then 1  else 0 end) / ${sampleCnt} as frequency,
-          collect_set( concat(genotypes.sampleId,":",cast(genotypes.genotype as string) ))
+          collect_set( concat(genotypes.id,":",cast(genotypes.genotype as string) ))
         from gts
-          where
-            length(variant.alternateAllele) = 1 and length(variant.referenceAllele) = 1
+          where length(variant.alternateAllele) = 1 and length(variant.referenceAllele) = 1
         group by variant.contig.contigName, variant.start, variant.referenceAllele,variant.alternateAllele
-          having count(*) = ${sampleCnt}
+          having count(distinct variant.alternateAllele)  = 1 and count(*) = ${sampleCnt}
       """)
 
       val schema = df4.schema
@@ -331,11 +330,18 @@ object PopulationStratification {
       variantsDF = sqlContext.createDataFrame(rows, StructType(StructField("snpIdx", LongType, false) +: schema.fields))
       variantsDF.show(10)
       variantsDF.write.parquet(parameters._chrFreqFileOutput)
+
+      /* --- make sampleId by variantsId ---- */
+      df.registerTempTable("gts")
+
     }
     else
       variantsDF = sqlContext.read.parquet(parameters._chrFreqFile) //sqlContext.read.format("com.databricks.spark.csv").option("header", "true").option("inferSchema", "true").load(parameters._chrFreqFile)
 
+
+
     variantsDF.registerTempTable("variants")
+
 
     val filteredDF = sqlContext.sql(
       s"""
