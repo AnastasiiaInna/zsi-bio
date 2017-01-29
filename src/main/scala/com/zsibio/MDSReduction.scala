@@ -74,7 +74,7 @@ class MDSReduction[T] (sc: SparkContext, sqlContext: SQLContext) extends Seriali
     val infoSampleRegion = ds.select("SampleId", "Region")
     val snps = ds.drop("SampleId").drop("Region")
     val snpsRDD: RDD[Vector] = snps.rdd.map(row => Vectors.dense(row.toSeq.toArray.map(x => x.asInstanceOf[Double])))
-    val matrix: Array[Double] = snpsRDD.cartesian(snpsRDD).map{case(vec1, vec2) => calcDistance(distance, vec1, vec2, p)}.collect()
+    val matrix: Array[Double] = snpsRDD.cartesian(snpsRDD).map{case(vec1, vec2) => calcDistance(distance, vec1, vec2, p)}.toArray
     val proximityMatr: Array[Array[Double]] = matrix.grouped(math.sqrt(matrix.length).toInt).toArray
 
     val pc = mdsMethod match {
@@ -89,7 +89,7 @@ class MDSReduction[T] (sc: SparkContext, sqlContext: SQLContext) extends Seriali
     _distance = distance
     _p = p
     val snps: RDD[Vector] = ds.map(row => Vectors.dense(row.toArray.map(x => x.asInstanceOf[Double])))
-    val matrix: Array[Double] = snps.cartesian(snps).map{case(vec1, vec2) => calcDistance(distance, vec1, vec2, p)}.collect()
+    val matrix: Array[Double] = snps.cartesian(snps).map{case(vec1, vec2) => calcDistance(distance, vec1, vec2, p)}.toArray
 /*    val rowMatrix = new RowMatrix(snps)
     val matrix = rowMatrix.columnSimilarities().toBlockMatrix().toLocalMatrix().toArray*/
     val proximityMatr: Array[Array[Double]] = matrix.grouped(math.sqrt(matrix.length).toInt).toArray

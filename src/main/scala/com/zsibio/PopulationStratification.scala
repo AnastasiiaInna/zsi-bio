@@ -364,11 +364,14 @@ object PopulationStratification {
       ds = sqlContext.read.parquet(parameters._chrFile)
     }
 
+    val sampleCnt = ds.count
+
     variantsDF.registerTempTable("variants")
     val filteredDF = sqlContext.sql(
       s"""
           select * from variants
             where frequency >= ${parameters._infFreq} and frequency <= ${parameters._supFreq}
+              and nonmissing >= $sampleCnt * (1 - ${parameters._missingRate})
       """
     )
 
@@ -493,20 +496,19 @@ object PopulationStratification {
 
         case "MDS" => {
           println(" MDS")
-          var snpMDS: RDD[Seq[Int]] = variantsRDDprunned.map {case (_, sortedVariants) => sortedVariants.map(_._2.toInt) }
-          snpMDS = snpMDS.transpose
+          val snpsMDS : RDD[Seq[Int]] = rddForLdPrun.map(_.snp.toSeq)
 
           val mds = new MDSReduction(sc, sqlContext)
-          val pc: RDD[Array[Double]] = sc.parallelize(mds.computeMDS(snpMDS, "classic"))
+          val pc: RDD[Array[Double]] = sc.parallelize(mds.computeMDS(snpsMDS, "classic"))
           println("mds: ")
           println(pc.count, pc.first.length)
 
-          val samplesSet: RDD[String] = ds.select("sampleId").map{_.toString}
+          val samplesSet: RDD[String] = ds.select("sampleId").sort("sampleId").map{_.toString}
           val mdsRDD: RDD[(String, Array[Double])] = samplesSet.zip(pc)
 
           // ds = gts.getDataSet(mdsRDD)
           println(ds.count(), ds.columns.length)
-          ds.show(50)
+          ds.show(10)
         }
       }
       t1 = System.currentTimeMillis()
@@ -526,6 +528,7 @@ object PopulationStratification {
     /**
       * Clustering
       */
+    ds = ds.cache()
 
     if (parameters._isClustering == true) {
       println("Clustering")
