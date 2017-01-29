@@ -497,7 +497,7 @@ object PopulationStratification {
         case "MDS" => {
           println(" MDS")
           // var snpsMDS : RDD[Seq[Int]] = rddForLdPrun.map(_.snp.toSeq)
-          var snpsMDS : RDD[Seq[Int]] = ds.drop("sampleId").drop("Region").map(_.toSeq.map(_.asInstanceOf[Int]))
+          var snpsMDS : RDD[Seq[Int]] = ds.drop("sampleId").drop("Region").map(_.toSeq.map(_.asInstanceOf[Double].toInt))
 
           val mds = new MDSReduction(sc, sqlContext)
           val pc: RDD[Array[Double]] = sc.parallelize(mds.computeMDS(snpsMDS, "classic"))
