@@ -382,7 +382,7 @@ object PopulationStratification {
     val rddForLdPrun: RDD[TSNP] = filteredDF.map {case Row(r0 : Long, r1 : String, r2 : Long, r3: Long, r4:String, r5: String, r6: Double, r7: WrappedArray[String]) =>
       TSNP(r0.toInt, s"${r1}:${r2}", r2.toInt,r7.map(_.split(':')).map(r => (r(0), r(1).toInt )).sortBy(r => r._1).map(_._2.toInt ).toArray.toVector)}
     val variantsRDD : RDD[(String, Array[(String, Int)])] = null
-    val selectedVariantsList = filteredDF.select(concat($"contigName", lit(":"),$"start")).map{case Row(r : String) => r}.toArray
+    val selectedVariantsList : Array[String] = filteredDF.select(concat($"contigName", lit(":"),$"start")).map{case Row(r : String) => r}.toArray :+ "SampleId" :+ "Region"
     ds = ds.select(selectedVariantsList.head, selectedVariantsList.tail:_*)
 
     /**
