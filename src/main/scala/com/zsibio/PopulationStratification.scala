@@ -496,7 +496,8 @@ object PopulationStratification {
 
         case "MDS" => {
           println(" MDS")
-          val snpsMDS : RDD[Seq[Int]] = rddForLdPrun.map(_.snp.toSeq)
+          // var snpsMDS : RDD[Seq[Int]] = rddForLdPrun.map(_.snp.toSeq)
+          var snpsMDS : RDD[Seq[Int]] = ds.drop("sampleId").drop("Region").map(_.toSeq.map(_.asInstanceOf[Int]))
 
           val mds = new MDSReduction(sc, sqlContext)
           val pc: RDD[Array[Double]] = sc.parallelize(mds.computeMDS(snpsMDS, "classic"))
@@ -506,7 +507,25 @@ object PopulationStratification {
           val samplesSet: RDD[String] = ds.select("sampleId").sort("sampleId").map{_.toString}
           val mdsRDD: RDD[(String, Array[Double])] = samplesSet.zip(pc)
 
-          // ds = gts.getDataSet(mdsRDD)
+          /* convert mdsRDD to DF for further usage */
+          val mdsPC = Array.fill(mdsRDD.first()._2.length)("PC")
+          val s = (1 until (mdsRDD.first()._2.length + 1))
+          val headerPC = (mdsPC, s).zipped.par.map{case(pc, s) => pc + s}
+
+          val header = StructType(
+            Array(StructField("SampleId", StringType)) ++
+              Array(StructField("Region", StringType)) ++
+              headerPC.map(pc => {StructField(pc, DoubleType)})
+          )
+
+          val rowRDD: RDD[Row] = mdsRDD.map {
+            case (sampleId, variant) =>
+              val region: Array[String] = Array(panel.getOrElse(sampleId, "Unknown"))
+              Row.fromSeq(Array(sampleId) ++ region ++ variant)
+          }
+
+          ds = sqlContext.createDataFrame(rowRDD, header)
+
           println(ds.count(), ds.columns.length)
           ds.show(10)
         }
