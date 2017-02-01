@@ -17,7 +17,7 @@ trait MDSMethods{
   def computeHamming(v1: Vector, v2: Vector): Double
   protected def calcDistance(method: String, v1: Vector, v2: Vector, p: Int) : Double
   // def computeMDS(ds: DataFrame, mdsMethod: String, distance: String, p: Int): Array[Array[Double]]
-  def computeMDS(ds: RDD[Seq[Int]], mdsMethod: String, distance: String, p: Int): Array[Array[Double]]
+  def computeMDS(ds: RDD[Seq[Double]], mdsMethod: String, distance: String, p: Int): Array[Array[Double]]
 }
 
 @SerialVersionUID(15L)
@@ -85,16 +85,16 @@ class MDSReduction[T] (sc: SparkContext, sqlContext: SQLContext) extends Seriali
     pc
   }
 
-  def computeMDS(ds: RDD[Seq[Int]], mdsMethod: String, distance: String = "euclidean", p: Int = 2): Array[Array[Double]] ={
+  def computeMDS(ds: RDD[Seq[Double]], mdsMethod: String, distance: String = "euclidean", p: Int = 2): Array[Array[Double]] ={
     _distance = distance
     _p = p
-    val snps: RDD[Vector] = ds.map(row => Vectors.dense(row.toArray.map(x => x.asInstanceOf[Double])))
+    val snps: RDD[Vector] = ds.map(row => Vectors.dense(row.toArray))
     val matrix: Array[Double] = snps.cartesian(snps).map{case(vec1, vec2) => calcDistance(distance, vec1, vec2, p)}.toArray
 /*    val rowMatrix = new RowMatrix(snps)
     val matrix = rowMatrix.columnSimilarities().toBlockMatrix().toLocalMatrix().toArray*/
     val proximityMatr: Array[Array[Double]] = matrix.grouped(math.sqrt(matrix.length).toInt).toArray
     println(proximityMatr.length, proximityMatr(1).length)
-    proximityMatr.foreach(x => println(x.toList))
+    // proximityMatr.foreach(x => println(x.toList))
 
     val pc = mdsMethod match {
       case "classic"  => computeClassic(proximityMatr, _npc)

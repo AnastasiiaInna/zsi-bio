@@ -54,14 +54,12 @@ class Parameters(
                   cvClustering : Boolean,
                   nRepeatClassification : Int,
                   nRepeatClustering : Int,
+                  clusterFileOutput: String,
+                  classTrainOutput : String,
+                  classTestOutput : String,
                   chrFreqFile : String,
                   chrFreqFileOutput : String
                 ){
-  def this() = this("file:///home/anastasiia/1000genomes/ALL.chrMT.phase3_callmom-v0_4.20130502.genotypes.vcf.adam",
-    "file:///home/anastasiia/1000genomes/ALL.panel", "super_pop", Array("AFR", "EUR", "AMR", "EAS", "SAS"),
-    0., true, 0.005, 1., true, "compsite", 0.2, 500000, Int.MaxValue, false, true, "PCA", "GramSVD", null,
-    true, false, "svm", null, true, false, 1, 1, null, "variants_frequencies.csv")
-
   val _chrFile = chrFile
   val _panelFile = panelFile
   val _pop = pop
@@ -90,6 +88,9 @@ class Parameters(
   val _nRepeatClustering : Int = nRepeatClustering
   val _chrFreqFile : String = chrFreqFile
   val _chrFreqFileOutput : String = chrFreqFileOutput
+  val _classTestOutput : String = classTestOutput
+  val _classTrainOutput : String = classTrainOutput
+  val _clusterFileOutput : String = clusterFileOutput
 }
 
 object PopulationStratification {
@@ -205,7 +206,8 @@ object PopulationStratification {
     var variantsDF : DataFrame = null
 
     if (args.length == 0) {
-      parameters = new Parameters()
+      println ("Teher is no file with input parameters")
+      exit(1)
     }
     else if (args.length == 1) {
 
@@ -255,6 +257,9 @@ object PopulationStratification {
         paramsMap.get("clustering_method").getOrElse(null), paramsMap.get("classification_method").getOrElse(null),
         paramsMap.get("cv_classification").getOrElse(null).toBoolean, paramsMap.get("cv_clustering").getOrElse(null).toBoolean,
         paramsMap.get("n_reapeat_classification").getOrElse(null).toInt, paramsMap.get("n_reapeat_clustering").getOrElse(null).toInt,
+        paramsMap.get("cluster_df_file").getOrElse(null),
+        paramsMap.get("class_train_file").getOrElse(null),
+        paramsMap.get("class_test_file").getOrElse(null),
         paramsMap.get("chr_frequencies_file").getOrElse(null),
         paramsMap.get("chr_frequencies_file_output").getOrElse(null)
       )
@@ -311,7 +316,7 @@ object PopulationStratification {
           variant.referenceAllele as ref,
           variant.alternateAllele as alt,
           sum(case when alleles[0] = 'Alt' and alleles[1] = 'Alt' then 2 when alleles[0] = 'Alt' or alleles[1] = 'Alt' then 1  else 0 end) / ${sampleCnt} as frequency,
-          collect_set( concat(genotypes.id,":",cast(genotypes.genotype as string) ))
+          collect_set( concat(genotypes.id,":",cast(genotypes.genotype as string) )) as genotype
         from gts
           where length(variant.alternateAllele) = 1 and length(variant.referenceAllele) = 1
         group by variant.contig.contigName, variant.start, variant.referenceAllele,variant.alternateAllele
@@ -325,51 +330,22 @@ object PopulationStratification {
       variantsDF.write.parquet(parameters._chrFreqFileOutput)
 
       /* --- make sampleId by variantsId ---- */
-      df.registerTempTable("gts")
-      var genotypesDF = sqlContext.sql(s"""
-        select
-          sampleId,
-          concat(variant.contig.contigName, ':', variant.start) as variantId,
-          sum(case when alleles[0] = 'Alt' and alleles[1] = 'Alt' then 2 when alleles[0] = 'Alt' or alleles[1] = 'Alt' then 1  else 0 end) as altCount
-          from gts
-            where alleles[0] <> 'OtherAlt' or alleles[1] <> 'OtherAlt'
-          group by sampleId, variant.contig.contigName, variant.start
-      """)
-
-      val sampleToData : RDD[(String, (String, Int))]= genotypesDF.map({case Row(sampleId : String, variantId : String, count : Long) => (sampleId, (variantId, count.toInt))})
-      val groupedSampleData : RDD[(String, Iterable[(String, Int)])] = sampleToData.groupByKey()
-      val variantsRDD : RDD[(String, Array[(String, Int)])] = groupedSampleData.mapValues(it => it.toArray.sortBy(_._1))
-
-      val header = StructType(
-        Array(StructField("SampleId", StringType)) ++
-          Array(StructField("Region", StringType)) ++
-          variantsRDD.first()._2.map(variant => {
-            StructField(variant._1, DoubleType)
-          }))
-
-      val rowRDD: RDD[Row] = variantsRDD.map {
-        case (sampleId, variants) =>
-          val region: Array[String] = Array(panel.getOrElse(sampleId, "Unknown"))
-          val alternateCounts: Array[Double] = variants.map(_._2.toDouble)
-          Row.fromSeq(Array(sampleId) ++ region ++ alternateCounts)
-      }
-
-      ds = sqlContext.createDataFrame(rowRDD, header)
-      ds.show(10)
-      ds.write.parquet(parameters._chrFile + "parquet")
 
     }
     else {
       variantsDF = sqlContext.read.parquet(parameters._chrFreqFile) //sqlContext.read.format("com.databricks.spark.csv").option("header", "true").option("inferSchema", "true").load(parameters._chrFreqFile)
-      ds = sqlContext.read.parquet(parameters._chrFile)
     }
 
-    val sampleCnt = ds.count
+    ds = sqlContext.read.parquet(parameters._chrFile)
+    ds.registerTempTable("gts")
+
+    val sampleCnt = sqlContext.sql("select count (distinct sampleId) from gts").first.getLong(0).toInt//ds.count
 
     variantsDF.registerTempTable("variants")
     val filteredDF = sqlContext.sql(
       s"""
-          select * from variants
+          select snpIdx, contigName, start, nonmissing, ref, alt, frequency, genotype
+          from variants
             where frequency >= ${parameters._infFreq} and frequency <= ${parameters._supFreq}
               and nonmissing >= $sampleCnt * (1 - ${parameters._missingRate})
       """
@@ -384,9 +360,43 @@ object PopulationStratification {
 
     val rddForLdPrun: RDD[TSNP] = filteredDF.map {case Row(r0 : Long, r1 : String, r2 : Long, r3: Long, r4:String, r5: String, r6: Double, r7: WrappedArray[String]) =>
       TSNP(r0.toInt, s"${r1}:${r2}", r2.toInt,r7.map(_.split(':')).map(r => (r(0), r(1).toInt )).sortBy(r => r._1).map(_._2.toInt ).toArray.toVector)}
-    val variantsRDD : RDD[(String, Array[(String, Int)])] = null
     val selectedVariantsList : Array[String] = filteredDF.select(concat($"contigName", lit(":"),$"start")).map{case Row(r : String) => r}.toArray :+ "SampleId" :+ "Region"
-    ds = ds.select(selectedVariantsList.head, selectedVariantsList.tail:_*)
+    // ds = ds.select(selectedVariantsList.head, selectedVariantsList.tail:_*)
+
+    var genotypesDF = sqlContext.sql(
+      s"""
+        select
+          sampleId,
+          concat(variant.contig.contigName, ':', variant.start) as variantId,
+          sum(case when alleles[0] = 'Alt' and alleles[1] = 'Alt' then 2 when alleles[0] = 'Alt' or alleles[1] = 'Alt' then 1  else 0 end) as altCount
+          from gts
+            where (alleles[0] <> 'OtherAlt' or alleles[1] <> 'OtherAlt')
+          group by sampleId, variant.contig.contigName, variant.start
+      """
+    ).where($"variantId".isin(selectedVariantsList:_*))
+
+    val sampleToData : RDD[(String, (String, Int))]= genotypesDF.map({case Row(sampleId : String, variantId : String, count : Long) => (sampleId, (variantId, count.toInt))})
+    val groupedSampleData : RDD[(String, Iterable[(String, Int)])] = sampleToData.groupByKey()
+    val variantsRDD : RDD[(String, Array[(String, Int)])] = groupedSampleData.mapValues(it => it.toArray.sortBy(_._1))
+
+    val header = StructType(
+      Array(StructField("SampleId", StringType)) ++
+        Array(StructField("Region", StringType)) ++
+        variantsRDD.first()._2.map(variant => {
+          StructField(variant._1, DoubleType)
+        }))
+
+    val rowRDD: RDD[Row] = variantsRDD.map {
+      case (sampleId, variants) =>
+        val region: Array[String] = Array(panel.getOrElse(sampleId, "Unknown"))
+        val alternateCounts: Array[Double] = variants.map(_._2.toDouble)
+        Row.fromSeq(Array(sampleId) ++ region ++ alternateCounts)
+    }
+
+    ds = sqlContext.createDataFrame(rowRDD, header)
+    ds.show(10)
+
+    // ds.write.parquet(parameters._chrFile + "parquet")
 
     /**
       * Variables for prunning data. Used for both ldPruning and Outliers detection cases
@@ -497,7 +507,7 @@ object PopulationStratification {
         case "MDS" => {
           println(" MDS")
           // var snpsMDS : RDD[Seq[Int]] = rddForLdPrun.map(_.snp.toSeq)
-          var snpsMDS : RDD[Seq[Int]] = ds.drop("sampleId").drop("Region").map(_.toSeq.map(_.asInstanceOf[Double].toInt))
+          var snpsMDS : RDD[Seq[Double]] = ds.drop("sampleId").drop("Region").map(_.toSeq.map(_.asInstanceOf[Double]))
 
           val mds = new MDSReduction(sc, sqlContext)
           val pc: RDD[Array[Double]] = sc.parallelize(mds.computeMDS(snpsMDS, "classic"))
@@ -634,8 +644,10 @@ object PopulationStratification {
 
       timeResult.foreach(println)
 
-      if (outputFilename != "null")
-        trainPrediction.select("SampleId", "Region", "Predict", "label", "features").repartition(1).writeToCsv(outputFilename)
+      if (parameters._clusterFileOutput != "null")
+        trainPrediction.select("SampleId", "Region", "Predict", "label", "features").repartition(1).writeToCsv(parameters._clusterFileOutput )
+      else
+        trainPrediction.select("SampleId", "Region", "Predict", "label", "features").repartition(1).writeToCsv(s"${parameters._chrFile}" + s"_${parameters._dimRedMethod}" + s"_${parameters._clusterMethod}")
     }
 
     /**
@@ -707,6 +719,12 @@ object PopulationStratification {
       computeAvgMetrics(classificationMetrics)
       println()
 
+      if (parameters._classTrainOutput != "null")
+        classification._prediction.select("SampleId", "Region", "Predict", "label", "features").repartition(1).writeToCsv(parameters._classTrainOutput)
+      else
+        classification._prediction.select("SampleId", "Region", "Predict", "label", "features").repartition(1).writeToCsv(s"${parameters._chrFile}" +
+          s"_${parameters._dimRedMethod}" + s"_${parameters._clusterMethod} + _train_df")
+
       /**
         * Test prediction
         */
@@ -722,11 +740,13 @@ object PopulationStratification {
       println(s"\nClassification. ${parameters._classificationMethod} : $classTime")
       timeResult ::= (s"Classification. ${parameters._classificationMethod} : $classTime")
 
-      testPrediction = classification._prediction
-
       timeResult.foreach(println)
-      if (outputFilename != "null")
-        testPrediction.repartition(1).writeToCsv(outputFilename)
+
+      if (parameters._classTestOutput != "null")
+        classification._prediction.select("SampleId", "Region", "Predict", "label", "features").repartition(1).writeToCsv(parameters._classTestOutput)
+      else
+        classification._prediction.select("SampleId", "Region", "Predict", "label", "features").repartition(1).writeToCsv(s"${parameters._chrFile}" +
+          s"_${parameters._dimRedMethod}" + s"_${parameters._clusterMethod} + _test_df")
     }
 
     timeResult.foreach(println)
