@@ -41,7 +41,7 @@ class PCADimReduction (sc: SparkContext, sqlContext: SQLContext) extends Seriali
       .setStages(Array(assembler, standardizer, pca))
 
     val model = pipeline.fit(ds)
-    val pcaFeaturesDF = model.transform(ds).select("Region", "SampleId", outputCol)
+    val pcaFeaturesDF = model.transform(ds).select("Region", "SampleId", "allPcaFeatures")
 
     val finalNumPC = explainedVariance(pcaFeaturesDF, nPC, varianceTreshold, "allPcaFeatures")
     println(s"Final number of the PCs: $finalNumPC")
