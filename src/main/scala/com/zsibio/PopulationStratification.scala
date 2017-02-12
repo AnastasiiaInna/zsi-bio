@@ -299,6 +299,7 @@ object PopulationStratification {
       bpanel.value.contains(genotype.getSampleId)
     })*/
 
+/*
     if (parameters._chrFreqFile == "null") {
       val df = sqlContext.read.parquet(parameters._chrFile)
       df.registerTempTable("gts")
@@ -334,15 +335,16 @@ object PopulationStratification {
 
     }
     else {
-      variantsDF = sqlContext.read.parquet(parameters._chrFreqFile) //sqlContext.read.format("com.databricks.spark.csv").option("header", "true").option("inferSchema", "true").load(parameters._chrFreqFile)
+      variantsDF = sqlContext.read.parquet(parameters._chrFreqFile).repartition(400) //sqlContext.read.format("com.databricks.spark.csv").option("header", "true").option("inferSchema", "true").load(parameters._chrFreqFile).repartition(400)
     }
 
-    ds = sqlContext.read.parquet(parameters._chrFile)
+    ds = sqlContext.read.parquet(parameters._chrFile).repartition(260)
     ds.registerTempTable("gts")
 
     val sampleCnt = sqlContext.sql("select count (distinct sampleId) from gts").first.getLong(0).toInt//ds.count
-
+    
     variantsDF.registerTempTable("variants")
+    /*
     val filteredDF = sqlContext.sql(
       s"""
           select snpIdx, contigName, start, nonmissing, ref, alt, frequency, genotype
@@ -351,6 +353,7 @@ object PopulationStratification {
               and nonmissing >= $sampleCnt * (1 - ${parameters._missingRate})
       """
     )
+    
 
     t0 = System.currentTimeMillis()
     filteredDF.show(20)
@@ -363,6 +366,7 @@ object PopulationStratification {
       TSNP(r0.toInt, s"${r1}:${r2}", r2.toInt,r7.map(_.split(':')).map(r => (r(0), r(1).toInt )).sortBy(r => r._1).map(_._2.toInt ).toArray.toVector)}
     val selectedVariantsList : Array[String] = filteredDF.select(concat($"contigName", lit(":"),$"start")).map{case Row(r : String) => r}.toArray :+ "SampleId" :+ "Region"
     // ds = ds.select(selectedVariantsList.head, selectedVariantsList.tail:_*)
+    */
 
     var genotypesDF = sqlContext.sql(
       s"""
@@ -370,11 +374,13 @@ object PopulationStratification {
           sampleId,
           concat(variant.contig.contigName, ':', variant.start) as variantId,
           sum(case when alleles[0] = 'Alt' and alleles[1] = 'Alt' then 2 when alleles[0] = 'Alt' or alleles[1] = 'Alt' then 1  else 0 end) as altCount
-          from gts
-            where (alleles[0] <> 'OtherAlt' or alleles[1] <> 'OtherAlt')
+          from gts g,variants v  where 
+          v.frequency >= ${parameters._infFreq} and v.frequency <= ${parameters._supFreq} and
+          g.variant.contig.contigName=v.contigName and g.variant.start=v.start and
+           (alleles[0] <> 'OtherAlt' or alleles[1] <> 'OtherAlt')
           group by sampleId, variant.contig.contigName, variant.start
       """
-    ).where($"variantId".isin(selectedVariantsList:_*))
+    ).repartition(400)
 
    // genotypesDF.groupBy("sampleId").pivot("variantId", selectedVariantsList).sum("altCount")
    // val panelDF = panel.toSeq.toDF("sampleId", "Region")//sqlContext.read.load(parameters._panelFile).toDF("sample", "pop", "super_pop", "gender").select("sample", parameters._pop).toDF("sampleId", "Region")
@@ -425,7 +431,7 @@ object PopulationStratification {
       val seq = sc.parallelize(0 until ldSize * ldSize)
       val ldPrun = new LDPruning(sc, sqlContext, seq)
 
-      val listGeno = rddForLdPrun
+      val listGeno : RDD[TSNP] = null//rddForLdPrun
       val prunnedSnpIdSet = ldPrun.performLDPruning(listGeno, parameters._ldMethod, parameters._ldTreshold, parameters._ldMaxBp, parameters._ldMaxN)
       variantsRDDprunned = prun(variantsRDDprunned, prunnedSnpIdSet)
       // ds = gts.getDataSet(variantsRDDprunned)
@@ -496,18 +502,21 @@ object PopulationStratification {
           * PCA
           */
 
-        case "PCA" =>{
+        case "pcaH2O" =>{
+	  println("pcaH2O")
+	  val unsupervised = new Unsupervised(sc, sqlContext)
+	  ds = unsupervised.pcaH2O(ds)
+	}	
+	
+	case "PCA" =>{
           println(" PCA")
-          //  val unsupervised = new Unsupervised(sc, sqlContext)
           val pcaDimRed = new PCADimReduction(sc, sqlContext)
         //  println(ds.count(), ds.columns.length)
-        //  var nPC = math.min(ds.count, ds.columns.length - 2).toInt
+          var nPC = math.min(ds.count, ds.columns.length - 2).toInt
         //  nPC = if (nPC > 30) 30 else (nPC - 1)
-	  val nPC = 15
           val variantion = 0.7	  
           ds = pcaDimRed.pcaML(ds, nPC, "Region", variantion, "pcaFeatures")
           ds.show(10)
-	// unsupervised.pcaH2O(ds)
         }
         /**
           * MDS
@@ -555,8 +564,32 @@ object PopulationStratification {
       timeResult ::= (s"Dimensionality reduction. ${parameters._dimRedMethod}: $dimRedTime")
     }
 
+*/
 /*    if (ds == null)
       ds = gts.getDataSet(variantsRDDprunned)*/
+
+    ds = sqlContext.read
+	    .format("com.databricks.spark.csv")
+	    .option("header", "true")
+	    .option("inferSchema", "true") // Automatically infer data types
+	    .option("delimiter", ";")
+	    .load(parameters._chrFile)
+
+
+    val schema = StructType(
+      Array(StructField("SampleId", StringType)) ++
+        Array(StructField("Region", StringType)) ++
+        ds.columns.filter(c=>c != "Region" && c!="SampleId").map(variant => {
+          StructField(variant, DoubleType)
+        }))
+
+    ds = sqlContext.read
+            .format("com.databricks.spark.csv")
+            .option("header", "true")
+            .schema(schema)
+            .option("delimiter", ";")
+            .load(parameters._chrFile)
+	    .select("SampleId", "Region", "PC1", "PC2", "PC3", "PC4", "PC5", "PC6", "PC7", "PC8", "PC9", "PC10", "PC11", "PC12", "PC13", "PC14", "PC15", "PC16", "PC17", "PC18", "PC19")
 
     val seeds = 1234
     var split = ds.randomSplit(Array(0.7, 0.3), seeds)
@@ -565,8 +598,7 @@ object PopulationStratification {
 
     /**
       * Clustering
-      */
-    ds = ds.cache()
+      */  
 
     if (parameters._isClustering == true) {
       println("Clustering")
@@ -596,12 +628,12 @@ object PopulationStratification {
         }
 
         case "kmeans" => {
-          if (parameters._cvClustering == true) {
-            val kTuning = clustering.gmmKTuning(trainingDS, Array("SampleId", "Region"), setK, nReapeat = parameters._nRepeatClustering)
+          /* if (parameters._cvClustering == true) {
+            val kTuning = clustering.kmeansML(trainingDS, "region", "SampleId", k)
             println("K estimation: ")
             kTuning.foreach { case (k, purity) => println(s"k = ${k}, purity = ${purity}") }
             k = kTuning.maxBy(_._2)._1
-          }
+          }*/
           avgPurity = (0 until parameters._nRepeatClustering).par.map{ _ =>
             val kmeansModel = clustering.kmeansML(ds, "Region", "SampleId", k)
             trainPrediction = clustering.predict(kmeansModel, ds)
@@ -686,7 +718,7 @@ object PopulationStratification {
         case "svm" => {
           println("Start svm")
           pipelineModelsList = trainDfList.map {trainingDf  =>
-            val svmModel = classification.svm(trainingDf, cv = parameters._cvClassification, cost = Array(1), maxIter = Array(1))
+            val svmModel = classification.svm(trainingDf, cv = parameters._cvClassification, cost = Array(0.01, 0.1, 1, 10), maxIter = Array(1))
             svmModel
           }.toList
 
@@ -729,9 +761,9 @@ object PopulationStratification {
       println()
 
       if (parameters._classTrainOutput != "null")
-        classification._prediction.select("Region", "prediction", "label", "pcaFeatures").repartition(1).writeToCsv(parameters._classTrainOutput)
+        classification._prediction.select("Region", "prediction", "label", "features").repartition(1).writeToCsv(parameters._classTrainOutput)
       else
-        classification._prediction.select("Region", "prediction", "label", "pcaFeatures").repartition(1).writeToCsv(s"${parameters._chrFile}" +
+        classification._prediction.select("Region", "prediction", "label", "features").repartition(1).writeToCsv(s"${parameters._chrFile}" +
           s"_${parameters._dimRedMethod}" + s"_${parameters._classificationMethod}_train_df")
 
       /**
@@ -752,9 +784,9 @@ object PopulationStratification {
       timeResult.foreach(println)
 
       if (parameters._classTestOutput != "null")
-        classification._prediction.select("Region", "prediction", "label", "pcaFeatures").repartition(1).writeToCsv(parameters._classTestOutput)
+        classification._prediction.select("Region", "prediction", "label", "features").repartition(1).writeToCsv(parameters._classTestOutput)
       else
-        classification._prediction.select("Region", "prediction", "label", "pcaFeatures").repartition(1).writeToCsv(s"${parameters._chrFile}" +
+        classification._prediction.select("Region", "prediction", "label", "features").repartition(1).writeToCsv(s"${parameters._chrFile}" +
           s"_${parameters._dimRedMethod}" + s"_${parameters._classificationMethod}_test_df")
     }
 
