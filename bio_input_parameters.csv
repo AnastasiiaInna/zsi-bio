@@ -1,9 +1,9 @@
 Parameter,Value
 chr_file,hdfs:///popgen/chr22.adam
 panel_file,hdfs:///popgen/ALL.panel
-outputFilename,hdfs:///popgen/class_chr22_svm
 population,super_pop
 population_set,AFR/EUR/AMR/SAS/EAS
+transformWithR,TRUE
 missing_rate,0
 frequencies,TRUE
 inf_freq,0.9
