@@ -32,6 +32,7 @@ class Parameters(
                   panelFile : String,
                   pop : String,
                   popSet : Array[String],
+                  transformWithR : Boolean,
                   missingRate : Double,
                   isFrequencies : Boolean,
                   infFreq : Double,
@@ -91,6 +92,7 @@ class Parameters(
   val _classTestOutput : String = classTestOutput
   val _classTrainOutput : String = classTrainOutput
   val _clusterFileOutput : String = clusterFileOutput
+  val _tranformWithR : Boolean = transformWithR
 }
 
 object PopulationStratification {
@@ -107,42 +109,26 @@ object PopulationStratification {
     }
   }
 
-  implicit class RDDwr[T, Y, Z](rdd: RDD[(T, Y, Z)]) {
-    def writeToCsv(filename: String): Unit = {
-      val tmpParquetDir = "hdfs:///popgen/Posts.tmp.parquet"
-      rdd.repartition(1).map { case (id, valueY, valueZ) => Array(id, valueY, valueZ).mkString(",")}
-        .saveAsTextFile(tmpParquetDir)
-      val dir = new File(tmpParquetDir)
+  implicit class dfWriter(dataSet: DataFrame) {
+    def writeTo(filename: String, isHeader: String = "true"): Unit = {
+      val tmpParquetDir = "Posts.tmp.parquet"
+      dataSet.write
+        .format("com.databricks.spark.csv")
+        .option("header", isHeader)
+        .save(tmpParquetDir)
 
+      val dir = new File(tmpParquetDir)
       val tmpTsvFile = tmpParquetDir + File.separatorChar + "part-00000"
       (new File(tmpTsvFile)).renameTo(new File(filename))
       dir.listFiles.foreach( f => f.delete )
       dir.delete
     }
-  }
 
-
-  implicit class dfWriter(dataSet: DataFrame) {
     def writeToCsv(filename: String, isHeader: String = "true"): Unit = {
-      val tmpParquetDir = "hdfs:///popgen/Posts.tmp.parquet"
       dataSet.write
         .format("com.databricks.spark.csv")
         .option("header", isHeader)
-        .save(filename)//tmpParquetDir)
-
-      /*
-      val vcf = "hdfs:///popgen/chr22.vcf"
-      val gts: RDD[Genotype] = sc.loadGenotypes(vcf)
-      val adamFile = "hdfs:///popgen/chr22.adam"
-      gts.adamParquetSave(adamFile) */
-
-
-      /*  val dir = new File(tmpParquetDir)
-        val tmpTsvFile = tmpParquetDir + File.separatorChar + "part-00000"
-        (new File(tmpTsvFile)).renameTo(new File(filename))
-        dir.listFiles.foreach( f => f.delete )
-        dir.delete
-     */
+        .save(filename)
     }
   }
 
@@ -202,7 +188,6 @@ object PopulationStratification {
 
     var parametersFile : String = null
     var parameters : Parameters = null
-    var outputFilename : String = null
     var timeResult : List[String] = Nil
     var variantsDF : DataFrame = null
 
@@ -218,8 +203,6 @@ object PopulationStratification {
       val keys = params.map(x => x(0)).collect
       val values = params.map(x => x(1)).collect
       val paramsMap = keys.zip(values).toMap
-
-      outputFilename = paramsMap.get("outputFilename").getOrElse(null)
 
       if (paramsMap.get("missing_rate").getOrElse(null).toDouble < 0. || paramsMap.get("inf_freq").getOrElse(null).toDouble < 0. || paramsMap.get("sup_freq").getOrElse(null).toDouble < 0.
         || paramsMap.get("ld_treshold").getOrElse(null).toDouble < 0. || paramsMap.get("ld_max_bp").getOrElse(null).toInt < 0 || paramsMap.get("ld_max_n").getOrElse(null).toInt < 0){
@@ -247,6 +230,7 @@ object PopulationStratification {
       parameters = new Parameters(
         paramsMap.get("chr_file").getOrElse(null), paramsMap.get("panel_file").getOrElse(null),
         paramsMap.get("population").getOrElse(null), paramsMap.get("population_set").getOrElse(null).split("/"),
+        paramsMap.get("transformWithR").getOrElse(null).toBoolean,
         paramsMap.get("missing_rate").getOrElse(null).toDouble, paramsMap.get("frequencies").getOrElse(null).toBoolean,
         paramsMap.get("inf_freq").getOrElse(null).toDouble, paramsMap.get("sup_freq").getOrElse(null).toDouble,
         paramsMap.get("ld_pruning").getOrElse(null).toBoolean, paramsMap.get("ld_method").getOrElse(null),
@@ -280,13 +264,10 @@ object PopulationStratification {
     def extract(file: String, superPop: String = "super_pop", filter: (String, String) => Boolean) = {
       sc.textFile(file).map(line => {
         val tokens = line.split("\t").toList
-        if (superPop == "pop") {
+        if (superPop == "pop")
           tokens(0) -> tokens(1)
-        } else {
-          tokens(0) -> tokens(2)
-        }
-      }
-      ).collectAsMap.filter(tuple => filter(tuple._1, tuple._2))
+        else tokens(0) -> tokens(2)
+      }).collectAsMap.filter(tuple => filter(tuple._1, tuple._2))
     }
 
 
@@ -299,13 +280,13 @@ object PopulationStratification {
       bpanel.value.contains(genotype.getSampleId)
     })*/
 
-/*
+
     if (parameters._chrFreqFile == "null") {
       val df = sqlContext.read.parquet(parameters._chrFile)
       df.registerTempTable("gts")
 
       val makeGenotypes = udf((id: String, genotype: WrappedArray[String]) =>
-        Genotypes(id, {if(genotype(0) == "Alt" && genotype(1) == "Alt") 2 else if (genotype(0) == "Alt" || genotype(1)== "Alt")  1 else 0} ) )
+        Genotypes(id, {if(genotype(0) == "Alt" && genotype(1) == "Alt") 2 else if (genotype(0) == "Alt" || genotype(1)== "Alt")  1 else 0} ))
 
       val df3 = df.withColumn("genotypes", makeGenotypes(col("sampleId"), col("alleles")))
       df3.registerTempTable("gts")
@@ -321,275 +302,241 @@ object PopulationStratification {
           collect_set( concat(genotypes.id,":",cast(genotypes.genotype as string) )) as genotype
         from gts
           where length(variant.alternateAllele) = 1 and length(variant.referenceAllele) = 1
-        group by variant.contig.contigName, variant.start, variant.referenceAllele,variant.alternateAllele
+        group by variant.contig.contigName, variant.start, variant.referenceAllele, variant.alternateAllele
           having count(distinct variant.alternateAllele)  = 1 and count(*) = ${sampleCnt}
       """)
 
       val schema = df4.schema
       val rows = df4.rdd.zipWithUniqueId().map{case (r: Row, id: Long) => Row.fromSeq(id +: r.toSeq)}
       variantsDF = sqlContext.createDataFrame(rows, StructType(StructField("snpIdx", LongType, false) +: schema.fields))
-      variantsDF.show(10)
       variantsDF.write.parquet(parameters._chrFreqFileOutput)
-
-      /* --- make sampleId by variantsId ---- */
-
+      variantsDF.repartition(1).writeToCsv(parameters._chrFreqFileOutput + ".csv", "true")
     }
-    else {
+    else if (parameters._tranformWithR == false) {
       variantsDF = sqlContext.read.parquet(parameters._chrFreqFile).repartition(400) //sqlContext.read.format("com.databricks.spark.csv").option("header", "true").option("inferSchema", "true").load(parameters._chrFreqFile).repartition(400)
-    }
+      variantsDF.registerTempTable("variants")
+      ds = sqlContext.read.parquet(parameters._chrFile).repartition(260)
+      ds.registerTempTable("gts")
 
-    ds = sqlContext.read.parquet(parameters._chrFile).repartition(260)
-    ds.registerTempTable("gts")
+      val sampleCnt = sqlContext.sql("select count (distinct sampleId) from gts").first.getLong(0).toInt //ds.count
 
-    val sampleCnt = sqlContext.sql("select count (distinct sampleId) from gts").first.getLong(0).toInt//ds.count
-    
-    variantsDF.registerTempTable("variants")
-    /*
-    val filteredDF = sqlContext.sql(
-      s"""
+/*      val filteredDF = sqlContext.sql(
+        s"""
           select snpIdx, contigName, start, nonmissing, ref, alt, frequency, genotype
           from variants
             where frequency >= ${parameters._infFreq} and frequency <= ${parameters._supFreq}
               and nonmissing >= $sampleCnt * (1 - ${parameters._missingRate})
-      """
-    )
-    
+      """)
 
-    t0 = System.currentTimeMillis()
-    filteredDF.show(20)
-    t1 = System.currentTimeMillis()
-    val fsFreqTime = time.formatTimeDiff(t0, t1)
-    println(s"Feature selection. Frequencies: $fsFreqTime")
-    timeResult ::= (s"Feature selection. Frequencies: $fsFreqTime")
+      t0 = System.currentTimeMillis()
+      filteredDF.show(20)
+      t1 = System.currentTimeMillis()
+      val fsFreqTime = time.formatTimeDiff(t0, t1)
+      println(s"Feature selection. Frequencies: $fsFreqTime")
+      timeResult ::= (s"Feature selection. Frequencies: $fsFreqTime")
 
-    val rddForLdPrun: RDD[TSNP] = filteredDF.map {case Row(r0 : Long, r1 : String, r2 : Long, r3: Long, r4:String, r5: String, r6: Double, r7: WrappedArray[String]) =>
-      TSNP(r0.toInt, s"${r1}:${r2}", r2.toInt,r7.map(_.split(':')).map(r => (r(0), r(1).toInt )).sortBy(r => r._1).map(_._2.toInt ).toArray.toVector)}
-    val selectedVariantsList : Array[String] = filteredDF.select(concat($"contigName", lit(":"),$"start")).map{case Row(r : String) => r}.toArray :+ "SampleId" :+ "Region"
-    // ds = ds.select(selectedVariantsList.head, selectedVariantsList.tail:_*)
-    */
+      val rddForLdPrun: RDD[TSNP] = filteredDF.map { case Row(r0: Long, r1: String, r2: Long, r3: Long, r4: String, r5: String, r6: Double, r7: WrappedArray[String]) =>
+        TSNP(r0.toInt, s"${r1}:${r2}", r2.toInt, r7.map(_.split(':')).map(r => (r(0), r(1).toInt)).sortBy(r => r._1).map(_._2.toInt).toArray.toVector)
+      }
+      val selectedVariantsList: Array[String] = filteredDF.select(concat($"contigName", lit(":"), $"start")).map { case Row(r: String) => r }.toArray :+ "SampleId" :+ "Region"
+      ds = ds.select(selectedVariantsList.head, selectedVariantsList.tail:_*)*/
 
-    var genotypesDF = sqlContext.sql(
-      s"""
-        select
-          sampleId,
-          concat(variant.contig.contigName, ':', variant.start) as variantId,
-          sum(case when alleles[0] = 'Alt' and alleles[1] = 'Alt' then 2 when alleles[0] = 'Alt' or alleles[1] = 'Alt' then 1  else 0 end) as altCount
-          from gts g,variants v  where 
-          v.frequency >= ${parameters._infFreq} and v.frequency <= ${parameters._supFreq} and
-          g.variant.contig.contigName=v.contigName and g.variant.start=v.start and
-           (alleles[0] <> 'OtherAlt' or alleles[1] <> 'OtherAlt')
+      val genotypesDF = sqlContext.sql(
+        s"""
+          select
+            sampleId,
+            concat(variant.contig.contigName, ':', variant.start) as variantId,
+            sum(case when alleles[0] = 'Alt' and alleles[1] = 'Alt' then 2 when alleles[0] = 'Alt' or alleles[1] = 'Alt' then 1  else 0 end) as altCount
+          from gts g,variants v
+          where v.frequency >= ${parameters._infFreq} and v.frequency <= ${parameters._supFreq} and
+              g.variant.contig.contigName=v.contigName and g.variant.start=v.start and
+                (alleles[0] <> 'OtherAlt' or alleles[1] <> 'OtherAlt')
           group by sampleId, variant.contig.contigName, variant.start
-      """
-    ).repartition(400)
+      """).repartition(400)
 
-   // genotypesDF.groupBy("sampleId").pivot("variantId", selectedVariantsList).sum("altCount")
-   // val panelDF = panel.toSeq.toDF("sampleId", "Region")//sqlContext.read.load(parameters._panelFile).toDF("sample", "pop", "super_pop", "gender").select("sample", parameters._pop).toDF("sampleId", "Region")
-   // ds = genotypesDF.join(panelDF, "sampleId")
+      // genotypesDF.groupBy("sampleId").pivot("variantId", selectedVariantsList).sum("altCount")
+      // val panelDF = panel.toSeq.toDF("sampleId", "Region")//sqlContext.read.load(parameters._panelFile).toDF("sample", "pop", "super_pop", "gender").select("sample", parameters._pop).toDF("sampleId", "Region")
+      // ds = genotypesDF.join(panelDF, "sampleId")
 
-    val sampleToData : RDD[(String, (String, Int))]= genotypesDF.map({case Row(sampleId : String, variantId : String, count : Long) => (sampleId, (variantId, count.toInt))})
-    val groupedSampleData : RDD[(String, Iterable[(String, Int)])] = sampleToData.groupByKey()
-    val variantsRDD : RDD[(String, Array[(String, Int)])] = groupedSampleData.mapValues(it => it.toArray.sortBy(_._1))
+      val sampleToData: RDD[(String, (String, Int))] = genotypesDF.map({ case Row(sampleId: String, variantId: String, count: Long) => (sampleId, (variantId, count.toInt)) })
+      val groupedSampleData: RDD[(String, Iterable[(String, Int)])] = sampleToData.groupByKey()
+      val variantsRDD: RDD[(String, Array[(String, Int)])] = groupedSampleData.mapValues(it => it.toArray.sortBy(_._1))
 
-    val header = StructType(
-      Array(StructField("SampleId", StringType)) ++
-        Array(StructField("Region", StringType)) ++
-        variantsRDD.first()._2.map(variant => {
-          StructField(variant._1, DoubleType)
-        }))
+      val header = StructType(
+        Array(StructField("SampleId", StringType)) ++
+          Array(StructField("Region", StringType)) ++
+          variantsRDD.first()._2.map(variant => {
+            StructField(variant._1, DoubleType)
+          }))
 
-    val rowRDD: RDD[Row] = variantsRDD.map {
-      case (sampleId, variants) =>
-        val region: Array[String] = Array(bpanel.value.getOrElse(sampleId, "Unknown"))
-        val alternateCounts: Array[Double] = variants.map(_._2.toDouble)
-        Row.fromSeq(Array(sampleId) ++ region ++ alternateCounts)
-    }
-
-    ds = sqlContext.createDataFrame(rowRDD, header)
-//    println(ds.count)
-//    variantsRDD.unpersist()
-//    rowRDD.unpersist()
-//    ds.cache
-
-    // ds.write.parquet(parameters._chrFile + "parquet")
-
-    /**
-      * Variables for prunning data. Used for both ldPruning and Outliers detection cases
-      */
-
-    var variantsRDDprunned: RDD[(String, Array[(String, Int)])] = variantsRDD
-    var prunnedSnpIdSet: List[String] = null
-
-    /**
-      *  LDPruning
-      */
-
-    if (parameters._isLDPruning == true) {
-      println("LD Pruning")
-      t0 = System.currentTimeMillis()
-
-      val ldSize = 256
-      val seq = sc.parallelize(0 until ldSize * ldSize)
-      val ldPrun = new LDPruning(sc, sqlContext, seq)
-
-      val listGeno : RDD[TSNP] = null//rddForLdPrun
-      val prunnedSnpIdSet = ldPrun.performLDPruning(listGeno, parameters._ldMethod, parameters._ldTreshold, parameters._ldMaxBp, parameters._ldMaxN)
-      variantsRDDprunned = prun(variantsRDDprunned, prunnedSnpIdSet)
-      // ds = gts.getDataSet(variantsRDDprunned)
-
-      t1 = System.currentTimeMillis()
-      val fsLdTime = time.formatTimeDiff(t0, t1)
-      println(s"Feature selection. LD Pruning: $fsLdTime")
-      timeResult ::= (s"Feature selection. LD Pruning: $fsLdTime")
-    }
-
-    /**
-      * Outliers detection
-      */
-
-    if (parameters._isOutliers == true) {
-      println("Outliers Detections")
-      val samplesForOutliers: RDD[Seq[Int]] = variantsRDDprunned.map {case (_, sortedVariants) => sortedVariants.map(_._2) }
-      val n: Int = samplesForOutliers.count().toInt
-      val randomindx: RDD[List[Int]] = sc.parallelize((1 to n / 2).map(unused => Random.shuffle(0 to n - 1).take(n / 2).toList))
-      val rddWithIdx: RDD[(Seq[Int], Long)] = samplesForOutliers.zipWithIndex()
-      val subRDDs: RDD[Array[Seq[Int]]] = randomindx.map(idx => rddWithIdx.filter { case (_, sampleidx) => idx.contains(sampleidx) }.map(_._1).collect)
-
-      /*    def computeMeanVar(iter: Iterator[Array[Seq[Int]]]) : Iterator[Array[(Double, Double)]] = {
-      var meanVar: List[Array[(Double, Double)]] = List()
-      while(iter.hasNext){
-        val iterCurr = iter.next
-        val meanstddev = iterCurr.map{row =>
-          val mean = row.sum / n.toDouble
-          val variance = row.map(score => (score - mean) * (score - mean))
-          val stddev = Math.sqrt(variance.sum / (n.toDouble - 1))
-          (mean, stddev)
-        }
-        meanVar ::= meanstddev
-      }
-      meanVar.iterator
-    }
-    val meanVar : RDD[Array[(Double, Double)]] = subRDDs.mapPartitions(computeMeanVar)*/
-
-      val meanVar: RDD[Array[(Double, Double)]] = subRDDs.map { currRDD =>
-        val meanStd: Array[(Double, Double)] = currRDD.map { row =>
-          val mean = row.sum / n.toDouble
-          val variance = row.map(score => (score - mean) * (score - mean))
-          val stddev = Math.sqrt(variance.sum / (n.toDouble - 1))
-          (mean, stddev)
-        }
-        meanStd
+      val rowRDD: RDD[Row] = variantsRDD.map {
+        case (sampleId, variants) =>
+          val region: Array[String] = Array(bpanel.value.getOrElse(sampleId, "Unknown"))
+          val alternateCounts: Array[Double] = variants.map(_._2.toDouble)
+          Row.fromSeq(Array(sampleId) ++ region ++ alternateCounts)
       }
 
-      meanVar.foreach(x => println(x.toList))
+      ds = sqlContext.createDataFrame(rowRDD, header)
+      // ds.write.parquet(parameters._chrFile + "parquet")
 
-      variantsRDDprunned = prun(variantsRDDprunned, prunnedSnpIdSet)
-      // ds = gts.getDataSet(variantsRDDprunned)
-      // println(subRDDs.length, subRDDs(0).count)
-    }
+      /**
+        * Variables for prunning data. Used for both ldPruning and Outliers detection cases
+        */
 
-    /**
-      * Dimensionality Reduction
-      */
+      var variantsRDDprunned: RDD[(String, Array[(String, Int)])] = variantsRDD
+      var prunnedSnpIdSet: List[String] = null
 
-    if (parameters._isDimRed == true) {
-      println("Dimensionality Reduction")
-      // val unsupervised = new Unsupervised(sc, sqlContext)
-      t0 = System.currentTimeMillis()
+      /**
+        * LDPruning
+        */
 
-      parameters._dimRedMethod match {
+      if (parameters._isLDPruning == true) {
+        println("LD Pruning")
+        t0 = System.currentTimeMillis()
 
-        /**
-          * PCA
-          */
+        val ldSize = 256
+        val seq = sc.parallelize(0 until ldSize * ldSize)
+        val ldPrun = new LDPruning(sc, sqlContext, seq)
 
-        case "pcaH2O" =>{
-	  println("pcaH2O")
-	  val unsupervised = new Unsupervised(sc, sqlContext)
-	  ds = unsupervised.pcaH2O(ds)
-	}	
-	
-	case "PCA" =>{
-          println(" PCA")
-          val pcaDimRed = new PCADimReduction(sc, sqlContext)
-        //  println(ds.count(), ds.columns.length)
-          var nPC = math.min(ds.count, ds.columns.length - 2).toInt
-        //  nPC = if (nPC > 30) 30 else (nPC - 1)
-          val variantion = 0.7	  
-          ds = pcaDimRed.pcaML(ds, nPC, "Region", variantion, "pcaFeatures")
-          ds.show(10)
-        }
-        /**
-          * MDS
-          */
+        val listGeno: RDD[TSNP] = null //rddForLdPrun
+        val prunnedSnpIdSet = ldPrun.performLDPruning(listGeno, parameters._ldMethod, parameters._ldTreshold, parameters._ldMaxBp, parameters._ldMaxN)
+        variantsRDDprunned = prun(variantsRDDprunned, prunnedSnpIdSet)
 
-        case "MDS" => {
-          println(" MDS")
-          // var snpsMDS : RDD[Seq[Int]] = rddForLdPrun.map(_.snp.toSeq)
-          var snpsMDS : RDD[Seq[Double]] = ds.drop("sampleId").drop("Region").map(_.toSeq.map(_.asInstanceOf[Double]))
+        t1 = System.currentTimeMillis()
+        val fsLdTime = time.formatTimeDiff(t0, t1)
+        println(s"Feature selection. LD Pruning: $fsLdTime")
+        timeResult ::= (s"Feature selection. LD Pruning: $fsLdTime")
+      }
 
-          val mds = new MDSReduction(sc, sqlContext)
-          val pc: RDD[Array[Double]] = sc.parallelize(mds.computeMDS(snpsMDS, "classic"))
-          println("mds: ")
-          println(pc.count, pc.first.length)
+      /**
+        * Outliers detection
+        */
 
-          val samplesSet: RDD[String] = ds.select("sampleId").sort("sampleId").map{_.toString}
-          val mdsRDD: RDD[(String, Array[Double])] = samplesSet.zip(pc)
+      if (parameters._isOutliers == true) {
+        println("Outliers Detections")
+        val samplesForOutliers: RDD[Seq[Int]] = variantsRDDprunned.map { case (_, sortedVariants) => sortedVariants.map(_._2) }
+        val n: Int = samplesForOutliers.count().toInt
+        val randomindx: RDD[List[Int]] = sc.parallelize((1 to n / 2).map(unused => Random.shuffle(0 to n - 1).take(n / 2).toList))
+        val rddWithIdx: RDD[(Seq[Int], Long)] = samplesForOutliers.zipWithIndex()
+        val subRDDs: RDD[Array[Seq[Int]]] = randomindx.map(idx => rddWithIdx.filter { case (_, sampleidx) => idx.contains(sampleidx) }.map(_._1).collect)
 
-          /* convert mdsRDD to DF for further usage */
-          val mdsPC = Array.fill(mdsRDD.first()._2.length)("PC")
-          val s = (1 until (mdsRDD.first()._2.length + 1))
-          val headerPC = (mdsPC, s).zipped.par.map{case(pc, s) => pc + s}
-
-          val header = StructType(
-            Array(StructField("SampleId", StringType)) ++
-              Array(StructField("Region", StringType)) ++
-              headerPC.map(pc => {StructField(pc, DoubleType)})
-          )
-
-          val rowRDD: RDD[Row] = mdsRDD.map {
-            case (sampleId, variant) =>
-              val region: Array[String] = Array(panel.getOrElse(sampleId, "Unknown"))
-              Row.fromSeq(Array(sampleId) ++ region ++ variant)
+        /*    def computeMeanVar(iter: Iterator[Array[Seq[Int]]]) : Iterator[Array[(Double, Double)]] = {
+        var meanVar: List[Array[(Double, Double)]] = List()
+        while(iter.hasNext){
+          val iterCurr = iter.next
+          val meanstddev = iterCurr.map{row =>
+            val mean = row.sum / n.toDouble
+            val variance = row.map(score => (score - mean) * (score - mean))
+            val stddev = Math.sqrt(variance.sum / (n.toDouble - 1))
+          (mean, stddev)
           }
-
-          ds = sqlContext.createDataFrame(rowRDD, header)
-
-          println(ds.count(), ds.columns.length)
-          ds.show(10)
+            meanVar ::= meanstddev
+          }
+          meanVar.iterator
         }
+        val meanVar : RDD[Array[(Double, Double)]] = subRDDs.mapPartitions(computeMeanVar)*/
+
+        val meanVar: RDD[Array[(Double, Double)]] = subRDDs.map { currRDD =>
+          val meanStd: Array[(Double, Double)] = currRDD.map { row =>
+            val mean = row.sum / n.toDouble
+            val variance = row.map(score => (score - mean) * (score - mean))
+            val stddev = Math.sqrt(variance.sum / (n.toDouble - 1))
+            (mean, stddev)
+          }
+          meanStd
+        }
+
+        meanVar.foreach(x => println(x.toList))
+        variantsRDDprunned = prun(variantsRDDprunned, prunnedSnpIdSet)
       }
-      t1 = System.currentTimeMillis()
-      val dimRedTime = time.formatTimeDiff(t0, t1)
-      println(s"Dimensionality reduction. ${parameters._dimRedMethod}: $dimRedTime")
-      timeResult ::= (s"Dimensionality reduction. ${parameters._dimRedMethod}: $dimRedTime")
+
+      /**
+        * Dimensionality Reduction
+        */
+
+      if (parameters._isDimRed == true) {
+        println("Dimensionality Reduction")
+        t0 = System.currentTimeMillis()
+
+        parameters._dimRedMethod match {
+          case "pcaH2O" => {
+            println("pcaH2O")
+            val unsupervised = new Unsupervised(sc, sqlContext)
+            ds = unsupervised.pcaH2O(ds)
+          }
+          case "PCA" => {
+            println(" PCA")
+            val pcaDimRed = new PCADimReduction(sc, sqlContext)
+            var nPC = math.min(ds.count, ds.columns.length - 2).toInt
+            //  nPC = if (nPC > 30) 30 else (nPC - 1)
+            val variantion = 0.7
+            ds = pcaDimRed.pcaML(ds, nPC, "Region", variantion, "pcaFeatures")
+          }
+          case "MDS" => {
+            println(" MDS")
+            // var snpsMDS : RDD[Seq[Int]] = rddForLdPrun.map(_.snp.toSeq)
+            var snpsMDS: RDD[Seq[Double]] = ds.drop("sampleId").drop("Region").map(_.toSeq.map(_.asInstanceOf[Double]))
+
+            val mds = new MDSReduction(sc, sqlContext)
+            val pc: RDD[Array[Double]] = sc.parallelize(mds.computeMDS(snpsMDS, "classic"))
+            println("mds: ")
+            println(pc.count, pc.first.length)
+
+            val samplesSet: RDD[String] = ds.select("sampleId").sort("sampleId").map {
+              _.toString
+            }
+            val mdsRDD: RDD[(String, Array[Double])] = samplesSet.zip(pc)
+
+            /* convert mdsRDD to DF for further usage */
+            val mdsPC = Array.fill(mdsRDD.first()._2.length)("PC")
+            val s = (1 until (mdsRDD.first()._2.length + 1))
+            val headerPC = (mdsPC, s).zipped.par.map { case (pc, s) => pc + s }
+
+            val header = StructType(
+              Array(StructField("SampleId", StringType)) ++
+                Array(StructField("Region", StringType)) ++
+                headerPC.map(pc => {
+                  StructField(pc, DoubleType)
+                }))
+
+            val rowRDD: RDD[Row] = mdsRDD.map {
+              case (sampleId, variant) =>
+                val region: Array[String] = Array(panel.getOrElse(sampleId, "Unknown"))
+                Row.fromSeq(Array(sampleId) ++ region ++ variant)
+            }
+
+            ds = sqlContext.createDataFrame(rowRDD, header)
+          }
+        }
+        t1 = System.currentTimeMillis()
+        val dimRedTime = time.formatTimeDiff(t0, t1)
+        println(s"Dimensionality reduction. ${parameters._dimRedMethod}: $dimRedTime")
+        timeResult ::= (s"Dimensionality reduction. ${parameters._dimRedMethod}: $dimRedTime")
+      }
+    }else if (parameters._tranformWithR == true){
+      ds = sqlContext.read
+        .format("com.databricks.spark.csv")
+        .option("header", "true")
+        .option("inferSchema", "true") // Automatically infer data types
+        .option("delimiter", ";")
+        .load(parameters._chrFile)
+
+
+      val schema = StructType(
+        Array(StructField("SampleId", StringType)) ++
+          Array(StructField("Region", StringType)) ++
+          ds.columns.filter(c=>c != "Region" && c!="SampleId").map(variant => {
+            StructField(variant, DoubleType)
+          }))
+
+      ds = sqlContext.read
+        .format("com.databricks.spark.csv")
+        .option("header", "true")
+        .schema(schema)
+        .option("delimiter", ";")
+        .load(parameters._chrFile)
+        .select("SampleId", "Region", "PC1", "PC2", "PC3", "PC4", "PC5", "PC6", "PC7", "PC8", "PC9", "PC10", "PC11", "PC12", "PC13", "PC14", "PC15", "PC16", "PC17", "PC18", "PC19")
     }
-
-*/
-/*    if (ds == null)
-      ds = gts.getDataSet(variantsRDDprunned)*/
-
-    ds = sqlContext.read
-	    .format("com.databricks.spark.csv")
-	    .option("header", "true")
-	    .option("inferSchema", "true") // Automatically infer data types
-	    .option("delimiter", ";")
-	    .load(parameters._chrFile)
-
-
-    val schema = StructType(
-      Array(StructField("SampleId", StringType)) ++
-        Array(StructField("Region", StringType)) ++
-        ds.columns.filter(c=>c != "Region" && c!="SampleId").map(variant => {
-          StructField(variant, DoubleType)
-        }))
-
-    ds = sqlContext.read
-            .format("com.databricks.spark.csv")
-            .option("header", "true")
-            .schema(schema)
-            .option("delimiter", ";")
-            .load(parameters._chrFile)
-	    .select("SampleId", "Region", "PC1", "PC2", "PC3", "PC4", "PC5", "PC6", "PC7", "PC8", "PC9", "PC10", "PC11", "PC12", "PC13", "PC14", "PC15", "PC16", "PC17", "PC18", "PC19")
 
     val seeds = 1234
     var split = ds.randomSplit(Array(0.7, 0.3), seeds)

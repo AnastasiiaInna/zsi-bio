@@ -195,11 +195,5 @@ class Classification (sc: SparkContext, sqlContext: SQLContext) extends Serializ
     _precisionByLabel = metrics.labels.map(label => metrics.precision(label)).toList
     _recallByLabel = metrics.labels.map(label => metrics.recall(label)).toList
     _fScoreByLabel = metrics.labels.map(label => metrics.fMeasure(label)).toList
-
-    /*println("Confusion matrix:")
-    println(metrics.confusionMatrix)
-    println(s"Precision = ${metrics.precision}")
-    println(s"Recall = ${metrics.recall}")
-    println(s"F measure = ${metrics.fMeasure}")*/
   }
 }
